@@ -1,0 +1,7 @@
+{
+    "github.copilot.chat.codeGeneration.instructions": [
+        {
+            "file": ".agent/skills/cpp_engineering_rules.md"
+        }
+    ]
+}
