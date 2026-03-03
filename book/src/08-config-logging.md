@@ -41,7 +41,7 @@ debug = true
 ### 优先级
 
 ```
-命令行 --config 路径 → 配置文件 → NCA_* 环境变量（最高优先级）
+内置默认值 → 配置文件 → NCA_* 环境变量 → 命令行参数 (--model/--api-key/--base-url/--workspace/--debug 等，最高优先级)
 ```
 
 ## 日志系统（`logger.cpp`）

@@ -149,6 +149,14 @@ def write_files(files: list) -> None:
         path = entry.get("path", "")
         content = entry.get("content", "")
 
+        if not isinstance(path, str) or not isinstance(content, str):
+            print(
+                f"[docgen] SKIP (malformed file entry #{idx}: "
+                "'path' and 'content' must be strings.)",
+                file=sys.stderr,
+            )
+            continue
+
         if not validate_path(path):
             print(f"[docgen] SKIP (unsafe path): {path}", file=sys.stderr)
             continue
@@ -222,16 +230,26 @@ def main():
         print(f"[docgen] Got: {result}", file=sys.stderr)
         sys.exit(1)
 
+    files = result["files"]
+    if not isinstance(files, list):
+        print(
+            f"[docgen] ERROR: Model response 'files' must be a list, "
+            f"got {type(files).__name__}.",
+            file=sys.stderr,
+        )
+        print(f"[docgen] Got files: {files}", file=sys.stderr)
+        sys.exit(1)
+
     summary = result.get("summary", "(no summary)")
     print(f"[docgen] Summary: {summary}", file=sys.stderr)
 
-    write_files(result["files"])
+    write_files(files)
 
     # Ensure changelog always gets updated, even if model omitted it
     changelog_rel = f"{ALLOWED_PREFIX}99-changelog.md"
     has_changelog = any(
         isinstance(entry, dict) and entry.get("path") == changelog_rel
-        for entry in result["files"]
+        for entry in files
     )
     if not has_changelog:
         print("[docgen] Model did not include changelog; appending summary automatically.", file=sys.stderr)
