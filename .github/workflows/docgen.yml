@@ -23,7 +23,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -50,9 +50,10 @@ jobs:
           DIFF=$(git diff "$BASE" "$HEAD" -- src/ include/ tests/ CMakeLists.txt build.sh 2>/dev/null || git diff HEAD~1 HEAD -- src/ include/ tests/ CMakeLists.txt build.sh)
           # Truncate to ~100KB
           DIFF=$(echo "$DIFF" | head -c 102400)
-          echo "diff<<EOF" >> "$GITHUB_OUTPUT"
-          echo "$DIFF" >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
+          DELIM="DOCGEN_DIFF_$(date +%s%N)"
+          printf 'diff<<%s\n' "$DELIM" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$DIFF" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$DELIM" >> "$GITHUB_OUTPUT"
 
       - name: Run docgen
         env:

@@ -2,62 +2,78 @@
 
 ## 配置系统（`config.cpp`）
 
-NanoCodeAgent 使用 INI 格式的配置文件，通过 `--config` 参数指定。
+NanoCodeAgent 使用**扁平 `key=value` 格式**的配置文件（无 section），通过 `--config` 参数指定文件路径。
 
 ### 配置文件结构
 
 ```ini
-[llm]
-endpoint = https://models.inference.ai.azure.com
+# NanoCodeAgent 配置文件（flat key=value，注释用 # 或 ;）
 model = openai/gpt-4o-mini
 api_key = <your-api-key>
-# 可选：系统提示词
-system_prompt = 你是一个 C++ 编程助手
-
-[agent]
-# 工作区目录（相对或绝对路径）
+base_url = https://models.inference.ai.azure.com
 workspace = ./my_workspace
-# 单次对话最大轮数
-max_turns = 20
-# bash 命令超时（秒）
-bash_timeout = 30
+debug = true
 ```
 
-### 配置项说明
+### 支持的配置键
 
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| `llm.endpoint` | — | LLM API 端点 URL（必填） |
-| `llm.model` | — | 模型名称（必填） |
-| `llm.api_key` | — | API 密钥（必填） |
-| `llm.system_prompt` | 内置默认 | 系统提示词 |
-| `agent.workspace` | `./workspace` | 工作区目录 |
-| `agent.max_turns` | 20 | 最大对话轮数 |
-| `agent.bash_timeout` | 30 | Bash 超时秒数 |
+| 键 | 默认值 | 说明 |
+|----|--------|------|
+| `model` | `gpt-4o` | 使用的模型名称 |
+| `api_key` | — | API 密钥 |
+| `base_url` | `https://api.openai.com/v1` | LLM API 端点 |
+| `workspace` | `.` | 工作区目录（相对或绝对路径） |
+| `debug` | `false` | 开启调试日志（`true` 或 `1`） |
+
+### 环境变量覆盖
+
+所有配置项均可通过环境变量覆盖（优先级高于配置文件）：
+
+| 环境变量 | 对应配置键 |
+|----------|-----------|
+| `NCA_MODEL` | `model` |
+| `NCA_API_KEY` | `api_key` |
+| `NCA_BASE_URL` | `base_url` |
+| `NCA_WORKSPACE` | `workspace` |
+| `NCA_DEBUG` | `debug` |
+| `NCA_CONFIG` | 配置文件路径 |
+
+### 优先级
+
+```
+命令行 --config 路径 → 配置文件 → NCA_* 环境变量（最高优先级）
+```
 
 ## 日志系统（`logger.cpp`）
 
+NanoCodeAgent 使用 **spdlog** 库实现日志。
+
 ### 日志级别
 
-```
-DEBUG < INFO < WARN < ERROR
-```
+当前支持两个级别，通过 `debug` 配置项或 `NCA_DEBUG` 环境变量控制：
 
-默认级别为 `INFO`，可通过配置或环境变量调整：
+| 条件 | 日志级别 |
+|------|----------|
+| `debug=false`（默认） | `info`（及以上） |
+| `debug=true` | `debug`（及以上） |
+
+### 开启调试日志
 
 ```bash
-NANO_LOG_LEVEL=DEBUG ./build/NanoCodeAgent --config config.ini
+# 方式 1：配置文件
+debug = true
+
+# 方式 2：环境变量
+NCA_DEBUG=true ./build/NanoCodeAgent --config config.ini
 ```
 
 ### 日志格式
 
 ```
-[2025-01-01 12:00:00] [INFO] [llm] Sending request to model gpt-4o-mini
-[2025-01-01 12:00:01] [DEBUG] [tool] Executing bash: ls -la
+[2025-01-01 12:00:00.123] [info] Sending request to model gpt-4o-mini
+[2025-01-01 12:00:01.456] [debug] Tool call: bash { "command": "ls -la" }
 ```
 
-### 日志输出
+日志输出到 **stderr**，不影响程序的标准输出。
 
-默认输出到 **stderr**，不影响 Agent 的标准输出（供程序化使用）。
-
-<!-- TODO: 补充日志文件轮转配置 -->
+<!-- TODO: 未来计划支持日志文件输出和更细粒度的日志级别（warn/error） -->

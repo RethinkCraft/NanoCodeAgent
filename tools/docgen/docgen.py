@@ -14,6 +14,8 @@ import json
 import os
 import sys
 import re
+import datetime
+from pathlib import Path
 
 try:
     import requests
@@ -21,6 +23,7 @@ except ImportError:
     print("ERROR: 'requests' package not installed. Run: pip install requests", file=sys.stderr)
     sys.exit(1)
 
+REPO_ROOT = str(Path(__file__).parent.parent.parent)
 GITHUB_MODELS_ENDPOINT = "https://models.inference.ai.azure.com"
 DEFAULT_MODEL = "openai/gpt-4.1-mini"
 ALLOWED_PREFIX = "book/src/"
@@ -59,8 +62,8 @@ def validate_path(path: str) -> bool:
         return False
     return True
 
-def call_github_models(token: str, model: str, diff: str) -> dict:
-    """Call GitHub Models API and return the parsed JSON response."""
+def call_github_models(token: str, model: str, diff: str) -> str:
+    """Call GitHub Models API and return the model response content as a string."""
     url = f"{GITHUB_MODELS_ENDPOINT}/chat/completions"
     headers = {
         "Authorization": f"Bearer {token}",
@@ -90,8 +93,28 @@ def call_github_models(token: str, model: str, diff: str) -> dict:
         print("[docgen] To list available models: gh api GET /catalog/models", file=sys.stderr)
         sys.exit(1)
 
-    raw = resp.json()
-    content = raw["choices"][0]["message"]["content"]
+    try:
+        raw = resp.json()
+    except ValueError as e:
+        print("[docgen] ERROR: Failed to parse API response as JSON.", file=sys.stderr)
+        print(f"[docgen] JSON parse error: {e}", file=sys.stderr)
+        print(f"[docgen] HTTP status: {resp.status_code}", file=sys.stderr)
+        print("[docgen] Raw response body:", file=sys.stderr)
+        print(resp.text, file=sys.stderr)
+        sys.exit(1)
+
+    try:
+        content = raw["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as e:
+        print("[docgen] ERROR: API response JSON had unexpected structure.", file=sys.stderr)
+        print(f"[docgen] Access error: {e}", file=sys.stderr)
+        print("[docgen] Raw response JSON:", file=sys.stderr)
+        try:
+            print(json.dumps(raw, indent=2, ensure_ascii=False), file=sys.stderr)
+        except TypeError:
+            print(resp.text, file=sys.stderr)
+        sys.exit(1)
+
     return content
 
 def parse_model_output(raw_content: str) -> dict:
@@ -115,7 +138,6 @@ def parse_model_output(raw_content: str) -> dict:
 
 def write_files(files: list) -> None:
     """Write the files returned by the model, with strict path validation."""
-    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     written = []
     for entry in files:
         path = entry.get("path", "")
@@ -125,11 +147,11 @@ def write_files(files: list) -> None:
             print(f"[docgen] SKIP (unsafe path): {path}", file=sys.stderr)
             continue
 
-        abs_path = os.path.join(repo_root, path)
+        abs_path = os.path.join(REPO_ROOT, path)
         # Final safety check: resolved path must be under book/src/
         resolved = os.path.realpath(abs_path)
-        book_src = os.path.realpath(os.path.join(repo_root, ALLOWED_PREFIX))
-        if not resolved.startswith(book_src):
+        book_src = os.path.realpath(os.path.join(REPO_ROOT, ALLOWED_PREFIX))
+        if os.path.commonpath([resolved, book_src]) != book_src:
             print(f"[docgen] SKIP (path escapes book/src/): {path}", file=sys.stderr)
             continue
 
@@ -143,6 +165,18 @@ def write_files(files: list) -> None:
         print("[docgen] No files written.", file=sys.stderr)
     else:
         print(f"[docgen] Updated {len(written)} file(s): {', '.join(written)}", file=sys.stderr)
+
+def append_changelog(summary: str, diff_snippet: str) -> None:
+    """Ensure book/src/99-changelog.md gets a summary appended."""
+    changelog_path = os.path.join(REPO_ROOT, ALLOWED_PREFIX, "99-changelog.md")
+    date_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    entry = f"\n### {date_str}\n\n{summary}\n"
+    if diff_snippet:
+        short = diff_snippet[:500].replace("```", "~~~")
+        entry += f"\n<details><summary>Diff snippet</summary>\n\n```diff\n{short}\n```\n\n</details>\n"
+    with open(changelog_path, "a", encoding="utf-8") as f:
+        f.write(entry)
+    print(f"[docgen] Appended changelog entry to {ALLOWED_PREFIX}99-changelog.md", file=sys.stderr)
 
 def main():
     token = os.environ.get("GITHUB_TOKEN", "")
@@ -169,6 +203,16 @@ def main():
     print(f"[docgen] Summary: {summary}", file=sys.stderr)
 
     write_files(result["files"])
+
+    # Ensure changelog always gets updated, even if model omitted it
+    changelog_rel = f"{ALLOWED_PREFIX}99-changelog.md"
+    has_changelog = any(
+        isinstance(entry, dict) and entry.get("path") == changelog_rel
+        for entry in result["files"]
+    )
+    if not has_changelog:
+        print("[docgen] Model did not include changelog; appending summary automatically.", file=sys.stderr)
+        append_changelog(summary, diff)
 
 if __name__ == "__main__":
     main()
