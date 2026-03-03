@@ -64,7 +64,7 @@ NanoCodeAgent 使用 **spdlog** 库实现日志。
 debug = true
 
 # 方式 2：环境变量
-NCA_DEBUG=true ./build/NanoCodeAgent --config config.ini
+NCA_DEBUG=true ./build/agent --config config.ini
 ```
 
 ### 日志格式
@@ -74,6 +74,6 @@ NCA_DEBUG=true ./build/NanoCodeAgent --config config.ini
 [2025-01-01 12:00:01.456] [debug] Tool call: bash { "command": "ls -la" }
 ```
 
-日志输出到 **stdout**（spdlog 默认行为），可通过 shell 重定向分离：`./NanoCodeAgent 2>/dev/null` 或 `./NanoCodeAgent > log.txt`。
+日志输出到 **stdout**（spdlog 默认行为），可通过 shell 重定向分离：`./build/agent > log.txt`。
 
 <!-- TODO: 未来计划支持日志文件输出和更细粒度的日志级别（warn/error） -->

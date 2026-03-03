@@ -139,7 +139,13 @@ def parse_model_output(raw_content: str) -> dict:
 def write_files(files: list) -> None:
     """Write the files returned by the model, with strict path validation."""
     written = []
-    for entry in files:
+    for idx, entry in enumerate(files):
+        if not isinstance(entry, dict):
+            print(
+                f"[docgen] SKIP (malformed file entry #{idx}: expected object, got {type(entry).__name__})",
+                file=sys.stderr,
+            )
+            continue
         path = entry.get("path", "")
         content = entry.get("content", "")
 
@@ -177,8 +183,11 @@ def append_changelog(summary: str, diff_snippet: str) -> None:
         short = diff_snippet[:500].replace("```", "~~~")
         entry += f"\n<details><summary>Diff snippet</summary>\n\n```diff\n{short}\n```\n\n</details>\n"
 
-    with open(changelog_path, "r", encoding="utf-8") as f:
-        text = f.read()
+    try:
+        with open(changelog_path, "r", encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        text = f"{CHANGELOG_START}\n"
 
     if CHANGELOG_START in text:
         # Insert new entry right after the START marker
