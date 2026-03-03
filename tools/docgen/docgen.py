@@ -166,17 +166,32 @@ def write_files(files: list) -> None:
     else:
         print(f"[docgen] Updated {len(written)} file(s): {', '.join(written)}", file=sys.stderr)
 
+CHANGELOG_START = "<!-- AI_DOCGEN_CHANGELOG_START -->"
+CHANGELOG_END = "<!-- AI_DOCGEN_CHANGELOG_END -->"
+
 def append_changelog(summary: str, diff_snippet: str) -> None:
-    """Ensure book/src/99-changelog.md gets a summary appended."""
+    """Insert a new entry into 99-changelog.md at the START marker, or append to EOF."""
     changelog_path = os.path.join(REPO_ROOT, ALLOWED_PREFIX, "99-changelog.md")
     date_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
     entry = f"\n### {date_str}\n\n{summary}\n"
     if diff_snippet:
         short = diff_snippet[:500].replace("```", "~~~")
         entry += f"\n<details><summary>Diff snippet</summary>\n\n```diff\n{short}\n```\n\n</details>\n"
-    with open(changelog_path, "a", encoding="utf-8") as f:
-        f.write(entry)
-    print(f"[docgen] Appended changelog entry to {ALLOWED_PREFIX}99-changelog.md", file=sys.stderr)
+
+    with open(changelog_path, "r", encoding="utf-8") as f:
+        text = f.read()
+
+    if CHANGELOG_START in text:
+        # Insert new entry right after the START marker
+        insert_pos = text.find(CHANGELOG_START) + len(CHANGELOG_START)
+        text = text[:insert_pos] + entry + text[insert_pos:]
+    else:
+        # Fallback: append to end of file
+        text += entry
+
+    with open(changelog_path, "w", encoding="utf-8") as f:
+        f.write(text)
+    print(f"[docgen] Updated changelog in {ALLOWED_PREFIX}99-changelog.md", file=sys.stderr)
 
 def main():
     token = os.environ.get("GITHUB_TOKEN", "")

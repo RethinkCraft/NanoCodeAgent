@@ -74,6 +74,6 @@ NCA_DEBUG=true ./build/NanoCodeAgent --config config.ini
 [2025-01-01 12:00:01.456] [debug] Tool call: bash { "command": "ls -la" }
 ```
 
-日志输出到 **stderr**，不影响程序的标准输出。
+日志输出到 **stdout**（spdlog 默认行为），可通过 shell 重定向分离：`./NanoCodeAgent 2>/dev/null` 或 `./NanoCodeAgent > log.txt`。
 
 <!-- TODO: 未来计划支持日志文件输出和更细粒度的日志级别（warn/error） -->
