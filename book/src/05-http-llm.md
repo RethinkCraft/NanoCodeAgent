@@ -46,7 +46,7 @@ data: [DONE]
 ## GitHub Models 配置示例
 
 ```ini
-base_url = https://models.inference.ai.azure.com
+base_url = https://models.inference.ai.azure.com/chat/completions
 model = openai/gpt-4o-mini
 api_key = <your-github-token>
 ```
