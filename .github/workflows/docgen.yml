@@ -49,7 +49,7 @@ jobs:
           fi
           DIFF=$(git diff "$BASE" "$HEAD" -- src/ include/ tests/ CMakeLists.txt build.sh 2>/dev/null || git diff HEAD~1 HEAD -- src/ include/ tests/ CMakeLists.txt build.sh)
           # Truncate to ~100KB
-          DIFF=$(echo "$DIFF" | head -c 102400)
+          DIFF=$(printf '%s' "$DIFF" | head -c 102400)
           DELIM="DOCGEN_DIFF_$(date +%s%N)"
           printf 'diff<<%s\n' "$DELIM" >> "$GITHUB_OUTPUT"
           printf '%s\n' "$DIFF" >> "$GITHUB_OUTPUT"
