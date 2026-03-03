@@ -21,7 +21,7 @@ NanoCodeAgent 是一个教学型项目，用 C++ 实现了一个轻量级的 AI 
 
 ## 如何使用本书
 
-- 在线阅读：访问项目 GitHub Pages（见 README）
+- 在线阅读：访问项目 GitHub Pages（在仓库 Settings -> Pages 启用）
 - 本地构建：安装 [mdBook](https://rust-lang.github.io/mdBook/)，然后执行 `mdbook serve book -p 3000`
 
 > **提示**：本书文档由 AI 自动维护（`tools/docgen/docgen.py`），

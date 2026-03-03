@@ -35,7 +35,7 @@ make -j$(nproc)
 ## 运行
 
 ```bash
-./build/NanoCodeAgent --config my_config.ini
+./build/agent --config my_config.ini
 ```
 
 配置文件示例请参阅[第 8 章：配置与日志系统](./08-config-logging.md)。

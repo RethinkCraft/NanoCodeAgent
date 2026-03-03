@@ -167,7 +167,6 @@ def write_files(files: list) -> None:
         print(f"[docgen] Updated {len(written)} file(s): {', '.join(written)}", file=sys.stderr)
 
 CHANGELOG_START = "<!-- AI_DOCGEN_CHANGELOG_START -->"
-CHANGELOG_END = "<!-- AI_DOCGEN_CHANGELOG_END -->"
 
 def append_changelog(summary: str, diff_snippet: str) -> None:
     """Insert a new entry into 99-changelog.md at the START marker, or append to EOF."""
