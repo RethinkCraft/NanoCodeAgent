@@ -5,6 +5,33 @@
 ## 最新变更
 
 <!-- AI_DOCGEN_CHANGELOG_START -->
+### 2026-03-04 09:41 UTC
+
+Updated the testing documentation to reflect changes in the workspace generation method for tests, which now uses a random device for unique workspace names.
+
+<details><summary>Diff snippet</summary>
+
+```diff
+diff --git a/tests/test_agent_loop_limits.cpp b/tests/test_agent_loop_limits.cpp
+index cac67aa..bcb4ef3 100644
+--- a/tests/test_agent_loop_limits.cpp
++++ b/tests/test_agent_loop_limits.cpp
+@@ -4,14 +4,14 @@
+ #include "config.hpp"
+ #include "logger.hpp"
+ #include <filesystem>
+-#include <chrono>
++#include <random>
+ 
+ class AgentLoopLimitsTest : public ::testing::Test {
+ protected:
+     std::string test_workspace;
+     void SetUp() override {
+-        auto now = std::chrono::system_clock::now().tim
+```
+
+</details>
+
 
 ### 初始版本（书籍创建）
 
