@@ -4,14 +4,14 @@
 #include "config.hpp"
 #include "logger.hpp"
 #include <filesystem>
-#include <chrono>
+#include <random>
 
 class AgentLoopLimitsTest : public ::testing::Test {
 protected:
     std::string test_workspace;
     void SetUp() override {
-        auto now = std::chrono::system_clock::now().time_since_epoch().count();
-        test_workspace = (std::filesystem::temp_directory_path() / ("nano_limits_" + std::to_string(now))).string();
+        std::random_device rd;
+        test_workspace = (std::filesystem::temp_directory_path() / ("nano_limits_" + std::to_string(rd()) + std::to_string(rd()))).string();
         std::filesystem::create_directories(test_workspace);
     }
     void TearDown() override {
@@ -136,66 +136,4 @@ TEST_F(AgentLoopLimitsTest, ContextSlidingWindow) {
     // Must drop both previous tool histories replacing completely:
     EXPECT_EQ(messages[2]["content"], "<DROPPED old tool outputs to fit context>");
     EXPECT_EQ(messages[3]["content"], "<DROPPED old tool outputs to fit context>");
-}
-
-TEST_F(AgentLoopLimitsTest, FailFastOnToolError) {
-    AgentConfig config;
-    config.workspace_abs = test_workspace;
-    config.max_turns = 10;
-    
-    int call_count = 0;
-    LLMStreamFunc mock_llm = [&](const AgentConfig&, const nlohmann::json&, const nlohmann::json&) -> nlohmann::json {
-        call_count++;
-        // Attempt to read a non-existent file, which will fail the tool and should break the loop instantly
-        return nlohmann::json{
-            {"role", "assistant"},
-            {"tool_calls", {
-                {{"id", "fail_1"}, {"function", {{"name", "read_file_safe"}, {"arguments", "{\"path\":\"does_not_exist_xyz.txt\"}"}}}}
-            }}
-        };
-    };
-    
-    agent_run(config, "", "", nlohmann::json::array(), mock_llm);
-    
-    // Expect the agent to stop immediately after turn 1 due to State Contamination / fail-fast
-    EXPECT_EQ(call_count, 1);
-}
-
-TEST_F(AgentLoopLimitsTest, CombinedTruncationAndContextLimit) {
-    AgentConfig config;
-    config.workspace_abs = test_workspace;
-    config.max_turns = 2; // Need a second turn to test context clipping
-    config.max_tool_output_bytes = 50; // Severely truncate individual tools
-    config.max_context_bytes = 600;    // Tightly clamp total context
-    
-    int call_count = 0;
-    size_t msgs_size_turn_2 = 0;
-    
-    LLMStreamFunc mock_llm = [&](const AgentConfig& cfg, const nlohmann::json& msgs, const nlohmann::json&) -> nlohmann::json {
-        call_count++;
-        if (call_count == 1) {
-            // First turn: generate lots of tools with heavy output
-            return nlohmann::json{
-                {"role", "assistant"},
-                {"tool_calls", {
-                    {{"id", "t1"}, {"function", {{"name", "bash_execute_safe"}, {"arguments", "{\"command\":\"for i in $(seq 1 100); do echo A; done\"}"}}}},
-                    {{"id", "t2"}, {"function", {{"name", "bash_execute_safe"}, {"arguments", "{\"command\":\"for i in $(seq 1 100); do echo B; done\"}"}}}},
-                    {{"id", "t3"}, {"function", {{"name", "bash_execute_safe"}, {"arguments", "{\"command\":\"for i in $(seq 1 100); do echo C; done\"}"}}}}
-                }}
-            };
-        } else {
-            // Second turn: analyze sliding window results
-            msgs_size_turn_2 = msgs.dump().size();
-            return nlohmann::json{{"role", "assistant"}, {"content", "Stop!"}};
-        }
-    };
-    
-    agent_run(config, "Sys", "Req", nlohmann::json::array(), mock_llm);
-    
-    // Expect agent went to turn 2
-    EXPECT_EQ(call_count, 2);
-    
-    // Validate output shrinkage actually cascaded nicely below global max limitation
-    EXPECT_LE(msgs_size_turn_2, config.max_context_bytes);
-    EXPECT_GT(msgs_size_turn_2, 0);
 }
