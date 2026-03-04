@@ -13,6 +13,15 @@ void print_help() {
               << "  --model <name>           LLM model to use (Default: gpt-4o, Env: NCA_MODEL)\n"
               << "  --api-key <key>          API key for the model provider (Env: NCA_API_KEY)\n"
               << "  --base-url <url>         Base URL for the API (Env: NCA_BASE_URL)\n"
+              << "  --mode <real|mock>       Run mode: real network or mock (Default: real, Env: NCA_MODE)\n"
+              << "  --mock-fixture <path>    Path to mock fixture file when in mock mode (Env: NCA_MOCK_FIXTURE)\n"
+              << "  --system-prompt-file <path> Custom system prompt file (Env: NCA_SYSTEM_PROMPT_FILE)\n"
+              << "  --dry-run                Print what would be sent without making network requests (Env: NCA_DRY_RUN)\n"
+              << "  --max-turns <n>          Maximum conversation turns (Default: 20)\n"
+              << "  --max-tool-calls-per-turn <n> Max tools per turn (Default: 8)\n"
+              << "  --max-total-tool-calls <n> Max total tool calls (Default: 50)\n"
+              << "  --max-tool-output-bytes <n> Max single tool output bytes (Default: 16384)\n"
+              << "  --max-context-bytes <n>  Max accumulated context before sliding window (Default: 204800)\n"
               << "  --debug                  Enable verbose debug logging (Env: NCA_DEBUG)\n"
               << "  -h, --help               Show this help message and exit\n"
               << "  -v, --version            Show version information and exit\n\n"
@@ -41,6 +50,10 @@ CliResult cli_parse(int argc, char* argv[], AgentConfig& config) {
         {"max-total-tool-calls", required_argument, nullptr, 2002},
         {"max-tool-output-bytes", required_argument, nullptr, 2003},
         {"max-context-bytes", required_argument, nullptr, 2004},
+        {"mode", required_argument, nullptr, 3000},
+        {"mock-fixture", required_argument, nullptr, 3001},
+        {"system-prompt-file", required_argument, nullptr, 3002},
+        {"dry-run", no_argument, nullptr, 3003},
         {nullptr, no_argument, nullptr, 0}
     };
 
@@ -91,6 +104,18 @@ CliResult cli_parse(int argc, char* argv[], AgentConfig& config) {
                 break;
             case 2004:
                 config.max_context_bytes = std::stoull(optarg);
+                break;
+            case 3000:
+                config.mode = optarg;
+                break;
+            case 3001:
+                config.mock_fixture = optarg;
+                break;
+            case 3002:
+                config.system_prompt_file = optarg;
+                break;
+            case 3003:
+                config.dry_run = true;
                 break;
             case '?':
             default:

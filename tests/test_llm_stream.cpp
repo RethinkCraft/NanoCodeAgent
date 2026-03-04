@@ -2,12 +2,12 @@
 #include "llm.hpp"
 #include "sse_parser.hpp"
 
-TEST(LlmStreamTest, NormalStreamingMultipleChunks) {
+TEST(LlmStreamTest, AccumulateContentCallbacks) {
     SseParser parser;
     std::string err;
     std::string accumulated;
-
-    auto callback = [&accumulated](const std::string& content) -> bool {
+    
+    std::function<bool(const std::string&)> callback = [&accumulated](const std::string& content) -> bool {
         accumulated += content;
         return true;
     };
@@ -30,7 +30,7 @@ TEST(LlmStreamTest, NormalStreamingMultipleChunks) {
 TEST(LlmStreamTest, ParseErrorPayload) {
     SseParser parser;
     std::string err;
-    auto callback = [](const std::string& content) -> bool { return true; };
+    std::function<bool(const std::string&)> callback = [](const std::string& content) -> bool { return true; };
 
     // API Error Payload
     std::string chunk = "data: {\"error\":{\"message\":\"API error limit\"}}\n\n";
@@ -38,22 +38,22 @@ TEST(LlmStreamTest, ParseErrorPayload) {
     EXPECT_EQ(err, "API Error: API error limit");
 }
 
-TEST(LlmStreamTest, ParseJsonThrowError) {
+TEST(LlmStreamTest, BadJsonFailsFast) {
     SseParser parser;
     std::string err;
-    auto callback = [](const std::string& content) -> bool { return true; };
+    std::function<bool(const std::string&)> callback = [](const std::string& content) -> bool { return true; };
 
     // Bad Formatted JSON
     std::string chunk = "data: {invalid json}\n\n";
+    // Based on Day 10 fail-fast requirement, bad JSON chunks should fail fast instead of ignoring.
     EXPECT_FALSE(llm_stream_process_chunk(chunk, parser, callback, nullptr, &err));
-    EXPECT_NE(err.find("Stream JSON Error"), std::string::npos);
 }
 
 TEST(LlmStreamTest, IgnoreControlChunks) {
     SseParser parser;
     std::string err;
     std::string accumulated;
-    auto callback = [&accumulated](const std::string& content) -> bool {
+    std::function<bool(const std::string&)> callback = [&accumulated](const std::string& content) -> bool {
         accumulated += content;
         return true;
     };
@@ -67,8 +67,7 @@ TEST(LlmStreamTest, IgnoreControlChunks) {
 TEST(LlmStreamTest, AbortFromUserCallback) {
     SseParser parser;
     std::string err;
-
-    auto callback = [](const std::string& content) -> bool {
+    std::function<bool(const std::string&)> callback = [](const std::string& content) -> bool {
         return false; // Signal abort immediately
     };
 

@@ -18,8 +18,15 @@ std::string execute_tool(const ToolCall& cmd, const AgentConfig& config) {
             std::string command = cmd.arguments.value("command", "");
             if (command.empty()) return format_tool_error("Missing 'command' argument for bash_execute_safe.");
             
-            // Timeouts could be passed, but default to safe defaults per tool
-            int timeout = cmd.arguments.value("timeout_ms", 10000);
+            // Safe parsing of timeout_ms to tolerate strings (LLMs sometimes pass "2000" instead of 2000)
+            int timeout = 5000;
+            if (cmd.arguments.contains("timeout_ms")) {
+                auto& t = cmd.arguments["timeout_ms"];
+                if (t.is_number()) timeout = t.get<int>();
+                else if (t.is_string()) {
+                    try { timeout = std::stoi(t.get<std::string>()); } catch(...) {}
+                }
+            }
             
             auto res = bash_execute_safe(config.workspace_abs, command, timeout, config.max_tool_output_bytes, config.max_tool_output_bytes);
             nlohmann::json out = {
@@ -63,4 +70,68 @@ std::string execute_tool(const ToolCall& cmd, const AgentConfig& config) {
     } catch (const std::exception& e) {
         return format_tool_error(std::string("Exception during tool execution: ") + e.what());
     }
+}
+
+nlohmann::json get_agent_tools_schema() {
+    return nlohmann::json::array({
+        {
+            {"type", "function"},
+            {"function", {
+                {"name", "read_file_safe"},
+                {"description", "Reads the complete contents of a given file."},
+                {"parameters", {
+                    {"type", "object"},
+                    {"properties", {
+                        {"path", {
+                            {"type", "string"},
+                            {"description", "The absolute or relative path to the file to read."}
+                        }}
+                    }},
+                    {"required", {"path"}}
+                }}
+            }}
+        },
+        {
+            {"type", "function"},
+            {"function", {
+                {"name", "write_file_safe"},
+                {"description", "Writes string content to a file. Any existing file is overwritten."},
+                {"parameters", {
+                    {"type", "object"},
+                    {"properties", {
+                        {"path", {
+                            {"type", "string"},
+                            {"description", "The absolute or relative path to the file to write."}
+                        }},
+                        {"content", {
+                            {"type", "string"},
+                            {"description", "The text content to be written."}
+                        }}
+                    }},
+                    {"required", {"path", "content"}}
+                }}
+            }}
+        },
+        {
+            {"type", "function"},
+            {"function", {
+                {"name", "bash_execute_safe"},
+                {"description", "Executes a bash shell command and returns the stdout, stderr, and exit code."},
+                {"parameters", {
+                    {"type", "object"},
+                    {"properties", {
+                        {"command", {
+                            {"type", "string"},
+                            {"description", "The bash command to run (e.g. `ls -la`, `mkdir test`)."}
+                        }},
+                        {"timeout_ms", {
+                            {"type", "integer"},
+                            {"description", "Timeout in milliseconds for the command. Default is 5000."}
+                        }}
+                    }},
+                    {"required", {"command"}}
+                }}
+            }}
+        }
+    });
 }

@@ -13,6 +13,12 @@ struct AgentConfig {
     bool debug_mode;
     std::string config_file_path; // Path to loaded config file, if any
     
+    // Day 10 features
+    std::string mode = "real"; // "real" or "mock"
+    std::optional<std::string> mock_fixture;
+    std::optional<std::string> system_prompt_file;
+    bool dry_run = false;
+
     // Agent limits / Brake system
     int max_turns = 20;
     int max_tool_calls_per_turn = 8;

@@ -92,3 +92,19 @@ add_executable(test_agent_loop_limits test_agent_loop_limits.cpp ${TEST_SOURCES}
 target_link_libraries(test_agent_loop_limits PRIVATE GTest::gtest_main spdlog::spdlog CURL::libcurl nlohmann_json::nlohmann_json)
 target_include_directories(test_agent_loop_limits PRIVATE ../include)
 gtest_discover_tests(test_agent_loop_limits)
+
+add_executable(test_stream_robustness test_stream_robustness.cpp ${TEST_SOURCES})
+target_link_libraries(test_stream_robustness PRIVATE GTest::gtest_main spdlog::spdlog CURL::libcurl nlohmann_json::nlohmann_json)
+target_include_directories(test_stream_robustness PRIVATE ../include)
+gtest_discover_tests(test_stream_robustness)
+
+add_executable(test_schema_and_args_tolerance test_schema_and_args_tolerance.cpp ${TEST_SOURCES})
+target_link_libraries(test_schema_and_args_tolerance PRIVATE GTest::gtest_main spdlog::spdlog CURL::libcurl nlohmann_json::nlohmann_json)
+target_include_directories(test_schema_and_args_tolerance PRIVATE ../include)
+gtest_discover_tests(test_schema_and_args_tolerance)
+
+add_executable(test_net_smoke test_net_smoke.cpp ${TEST_SOURCES})
+target_link_libraries(test_net_smoke PRIVATE GTest::gtest_main spdlog::spdlog CURL::libcurl nlohmann_json::nlohmann_json)
+target_include_directories(test_net_smoke PRIVATE ../include)
+# Setup net test properties
+gtest_discover_tests(test_net_smoke PROPERTIES LABELS "net")

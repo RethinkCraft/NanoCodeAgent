@@ -47,6 +47,10 @@ static void config_load_from_file(AgentConfig& config, const std::string& filepa
         else if (key == "max_total_tool_calls") config.max_total_tool_calls = std::stoi(val);
         else if (key == "max_tool_output_bytes") config.max_tool_output_bytes = std::stoull(val);
         else if (key == "max_context_bytes") config.max_context_bytes = std::stoull(val);
+        else if (key == "mode") config.mode = val;
+        else if (key == "mock_fixture") config.mock_fixture = val;
+        else if (key == "system_prompt_file") config.system_prompt_file = val;
+        else if (key == "dry_run") config.dry_run = (val == "true" || val == "1");
     }
 }
 
@@ -61,6 +65,10 @@ static void config_apply_env(AgentConfig& config) {
     if (const char* v = std::getenv("NCA_MAX_TOTAL_TOOL_CALLS")) config.max_total_tool_calls = std::stoi(v);
     if (const char* v = std::getenv("NCA_MAX_TOOL_OUTPUT_BYTES")) config.max_tool_output_bytes = std::stoull(v);
     if (const char* v = std::getenv("NCA_MAX_CONTEXT_BYTES")) config.max_context_bytes = std::stoull(v);
+    if (const char* v = std::getenv("NCA_MODE")) config.mode = v;
+    if (const char* v = std::getenv("NCA_MOCK_FIXTURE")) config.mock_fixture = v;
+    if (const char* v = std::getenv("NCA_SYSTEM_PROMPT_FILE")) config.system_prompt_file = v;
+    if (const char* v = std::getenv("NCA_DRY_RUN")) config.dry_run = (std::string(v) == "true" || std::string(v) == "1");
 }
 
 AgentConfig config_init(int argc, char* argv[]) {
