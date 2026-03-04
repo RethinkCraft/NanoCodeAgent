@@ -10,6 +10,9 @@ set(TEST_SOURCES
     ../src/write_file.cpp
     ../src/read_file.cpp
     ../src/bash_tool.cpp
+    ../src/agent_utils.cpp
+    ../src/agent_tools.cpp
+    ../src/agent_loop.cpp
 )
 
 # CLI Test
@@ -79,3 +82,13 @@ gtest_discover_tests(test_toolcall_assembler)
 gtest_discover_tests(test_write_file)
 gtest_discover_tests(test_read_file)
 gtest_discover_tests(test_bash_tool)
+
+add_executable(test_agent_mock_e2e test_agent_mock_e2e.cpp ${TEST_SOURCES})
+target_link_libraries(test_agent_mock_e2e PRIVATE GTest::gtest_main spdlog::spdlog CURL::libcurl nlohmann_json::nlohmann_json)
+target_include_directories(test_agent_mock_e2e PRIVATE ../include)
+gtest_discover_tests(test_agent_mock_e2e)
+
+add_executable(test_agent_loop_limits test_agent_loop_limits.cpp ${TEST_SOURCES})
+target_link_libraries(test_agent_loop_limits PRIVATE GTest::gtest_main spdlog::spdlog CURL::libcurl nlohmann_json::nlohmann_json)
+target_include_directories(test_agent_loop_limits PRIVATE ../include)
+gtest_discover_tests(test_agent_loop_limits)

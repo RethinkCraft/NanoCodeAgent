@@ -36,6 +36,11 @@ CliResult cli_parse(int argc, char* argv[], AgentConfig& config) {
         {"api-key", required_argument, nullptr, 1001},
         {"base-url", required_argument, nullptr, 1002},
         {"debug", no_argument, nullptr, 1003},
+        {"max-turns", required_argument, nullptr, 2000},
+        {"max-tool-calls-per-turn", required_argument, nullptr, 2001},
+        {"max-total-tool-calls", required_argument, nullptr, 2002},
+        {"max-tool-output-bytes", required_argument, nullptr, 2003},
+        {"max-context-bytes", required_argument, nullptr, 2004},
         {nullptr, no_argument, nullptr, 0}
     };
 
@@ -71,6 +76,21 @@ CliResult cli_parse(int argc, char* argv[], AgentConfig& config) {
                 break;
             case 1003:
                 config.debug_mode = true;
+                break;
+            case 2000:
+                config.max_turns = std::stoi(optarg);
+                break;
+            case 2001:
+                config.max_tool_calls_per_turn = std::stoi(optarg);
+                break;
+            case 2002:
+                config.max_total_tool_calls = std::stoi(optarg);
+                break;
+            case 2003:
+                config.max_tool_output_bytes = std::stoull(optarg);
+                break;
+            case 2004:
+                config.max_context_bytes = std::stoull(optarg);
                 break;
             case '?':
             default:

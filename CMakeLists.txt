@@ -53,6 +53,9 @@ set(SOURCES
     src/write_file.cpp
     src/read_file.cpp
     src/bash_tool.cpp
+    src/agent_utils.cpp
+    src/agent_tools.cpp
+    src/agent_loop.cpp
 )
 
 # Main executable

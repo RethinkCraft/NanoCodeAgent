@@ -42,6 +42,11 @@ static void config_load_from_file(AgentConfig& config, const std::string& filepa
         else if (key == "base_url") config.base_url = val;
         else if (key == "workspace") config.workspace = val;
         else if (key == "debug") config.debug_mode = (val == "true" || val == "1");
+        else if (key == "max_turns") config.max_turns = std::stoi(val);
+        else if (key == "max_tool_calls_per_turn") config.max_tool_calls_per_turn = std::stoi(val);
+        else if (key == "max_total_tool_calls") config.max_total_tool_calls = std::stoi(val);
+        else if (key == "max_tool_output_bytes") config.max_tool_output_bytes = std::stoull(val);
+        else if (key == "max_context_bytes") config.max_context_bytes = std::stoull(val);
     }
 }
 
@@ -51,6 +56,11 @@ static void config_apply_env(AgentConfig& config) {
     if (const char* v = std::getenv("NCA_BASE_URL")) config.base_url = v;
     if (const char* v = std::getenv("NCA_WORKSPACE")) config.workspace = v;
     if (const char* v = std::getenv("NCA_DEBUG")) config.debug_mode = (std::string(v) == "true" || std::string(v) == "1");
+    if (const char* v = std::getenv("NCA_MAX_TURNS")) config.max_turns = std::stoi(v);
+    if (const char* v = std::getenv("NCA_MAX_TOOL_CALLS_PER_TURN")) config.max_tool_calls_per_turn = std::stoi(v);
+    if (const char* v = std::getenv("NCA_MAX_TOTAL_TOOL_CALLS")) config.max_total_tool_calls = std::stoi(v);
+    if (const char* v = std::getenv("NCA_MAX_TOOL_OUTPUT_BYTES")) config.max_tool_output_bytes = std::stoull(v);
+    if (const char* v = std::getenv("NCA_MAX_CONTEXT_BYTES")) config.max_context_bytes = std::stoull(v);
 }
 
 AgentConfig config_init(int argc, char* argv[]) {
