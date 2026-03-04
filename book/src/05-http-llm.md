@@ -17,7 +17,7 @@ NanoCodeAgent 使用 **libcurl** 作为底层 HTTP 客户端，封装在 `http.c
 NanoCodeAgent 兼容 **OpenAI Chat Completions API** 格式，可对接：
 - OpenAI（GPT-4、GPT-4o 等）
 - Azure OpenAI
-- GitHub Models（`https://models.inference.ai.azure.com`）
+- GitHub Models（`https://models.github.ai/inference`）
 - 本地模型（Ollama 等）
 
 ### 请求结构
@@ -46,7 +46,7 @@ data: [DONE]
 ## GitHub Models 配置示例
 
 ```ini
-base_url = https://models.inference.ai.azure.com/chat/completions
+base_url = https://models.github.ai/inference/chat/completions
 model = openai/gpt-4o-mini
 api_key = <your-github-token>
 ```
