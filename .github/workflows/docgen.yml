@@ -58,7 +58,7 @@ jobs:
       - name: Run docgen
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          DOCGEN_MODEL: ${{ vars.DOCGEN_MODEL || 'openai/gpt-4.1-mini' }}
+          DOCGEN_MODEL: ${{ vars.DOCGEN_MODEL || 'openai/gpt-4o-mini' }}
           CODE_DIFF: ${{ steps.diff.outputs.diff }}
         run: |
           bash tools/docgen/generate.sh

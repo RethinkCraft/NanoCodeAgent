@@ -6,9 +6,11 @@ Reads CODE_DIFF from environment, calls GitHub Models API,
 parses the JSON response, and writes updated book/src/** files.
 
 Environment variables:
-  GITHUB_TOKEN   - GitHub token with models:read permission (required)
-  DOCGEN_MODEL   - Model to use (default: openai/gpt-4.1-mini)
-  CODE_DIFF      - The git diff to analyze (required)
+  GITHUB_TOKEN             - GitHub token with models:read permission (required)
+  DOCGEN_MODEL             - Model to use (default: openai/gpt-4o-mini)
+  CODE_DIFF                - The git diff to analyze (required)
+  GITHUB_MODELS_ENDPOINT   - GitHub Models inference endpoint
+                             (default: https://models.github.ai/inference)
 """
 import json
 import os
@@ -24,8 +26,27 @@ except ImportError:
     sys.exit(1)
 
 REPO_ROOT = str(Path(__file__).parent.parent.parent)
-GITHUB_MODELS_ENDPOINT = "https://models.inference.ai.azure.com"
-DEFAULT_MODEL = "openai/gpt-4.1-mini"
+# Normalize the GitHub Models endpoint:
+# - Trim whitespace
+# - Treat empty as unset (fallback to default)
+# - Strip trailing /v1/chat/completions or /chat/completions if present
+# - Remove any remaining trailing slashes
+_raw_endpoint = os.environ.get("GITHUB_MODELS_ENDPOINT")
+if _raw_endpoint is None:
+    GITHUB_MODELS_ENDPOINT = "https://models.github.ai/inference"
+else:
+    _endpoint = _raw_endpoint.strip()
+    if not _endpoint:
+        GITHUB_MODELS_ENDPOINT = "https://models.github.ai/inference"
+    else:
+        # Remove common full-path suffixes if the user supplied a full URL.
+        _base = _endpoint.rstrip("/")
+        for _suffix in ("/v1/chat/completions", "/chat/completions"):
+            if _base.endswith(_suffix):
+                _base = _base[: -len(_suffix)]
+                break
+        GITHUB_MODELS_ENDPOINT = _base.rstrip("/") or "https://models.github.ai/inference"
+DEFAULT_MODEL = "openai/gpt-4o-mini"
 ALLOWED_PREFIX = "book/src/"
 
 SYSTEM_PROMPT = """You are a technical documentation assistant for the NanoCodeAgent project.
