@@ -6,6 +6,7 @@
 
 - [第 1 章：项目概览](./01-overview.md)
 - [第 2 章：环境搭建与构建](./02-setup.md)
+- [Testing](./02-testing.md)
 - [第 3 章：核心架构设计](./03-architecture.md)
 - [第 4 章：工具调用机制](./04-tool-calling.md)
 - [第 5 章：HTTP 与 LLM 集成](./05-http-llm.md)
