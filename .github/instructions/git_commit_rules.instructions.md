@@ -3,9 +3,9 @@ description: "Use when writing git commit messages or reviewing commit history. 
 ---
 # Git Commit Message Rules
 
-When writing commit messages for this repository as an AI coding assistant, you must strictly adhere to the project's commit style:
+Apply `AGENTS.md` first. Then use the following exact formatting rules when the task is about commit messages or commit packaging.
 
-## 1. Commit Message Structure
+## Commit Message Structure
 Commits must include a top-level summary line, a blank line, and a bulleted list of specific changes.
 
 **Format Pattern:**
@@ -17,7 +17,7 @@ Commits must include a top-level summary line, a blank line, and a bulleted list
 ...
 ```
 
-## 2. Component Rules
+## Component Rules
 - **Type**: Standard conventional commit types (`feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`).
   - **CRITICAL**: Do NOT include a `(<scope>)` in the top-level summary line. It must strictly be `<type>: <subject summary>`.
 - **Subject Summary**: Written in the imperative mood, concise, lowercase, and summarizes the core contribution of the commit.
@@ -26,7 +26,7 @@ Commits must include a top-level summary line, a blank line, and a bulleted list
   - Includes type and an optional but recommended `(<scope>)` (e.g., `feat(http):`, `test(sse):`).
   - Action-oriented descriptions (e.g., `introduce workspace_init...`, `add unit test...`).
 
-## 3. Example Reference
+## Example Reference
 ```
 feat: implement config precedence and workspace security sandbox
 
@@ -36,3 +36,7 @@ feat: implement config precedence and workspace security sandbox
 - test(config): add unit tests validating config overriding priorities
 - test(workspace): add unit tests securing absolute access, dot dots logic
 ```
+
+## Reminder
+
+- This file defines a formatting rule, not a reusable task skill.
