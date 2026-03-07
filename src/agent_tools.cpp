@@ -5,6 +5,7 @@
 #include "repo_tools.hpp"
 #include "write_file.hpp"
 
+#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -56,8 +57,35 @@ size_t optional_size_arg(const ToolCall& cmd, const char* key, size_t default_va
     throw std::runtime_error("Argument '" + std::string(key) + "' must be an integer.");
 }
 
-int optional_int_arg(const ToolCall& cmd, const char* key, int default_value) {
-    return static_cast<int>(optional_size_arg(cmd, key, static_cast<size_t>(default_value)));
+int parse_timeout_ms_arg(const ToolCall& cmd, const char* key, int default_value) {
+    if (!cmd.arguments.contains(key)) {
+        return default_value;
+    }
+
+    const auto& value = cmd.arguments.at(key);
+    long long parsed = 0;
+
+    if (value.is_number_unsigned()) {
+        const auto raw = value.get<unsigned long long>();
+        if (raw > static_cast<unsigned long long>(std::numeric_limits<int>::max())) {
+            throw std::runtime_error("Argument '" + std::string(key) + "' must be between 1 and " +
+                                     std::to_string(std::numeric_limits<int>::max()) + ".");
+        }
+        parsed = static_cast<long long>(raw);
+    } else if (value.is_number_integer()) {
+        parsed = value.get<long long>();
+    } else if (value.is_string()) {
+        parsed = std::stoll(value.get<std::string>());
+    } else {
+        throw std::runtime_error("Argument '" + std::string(key) + "' must be an integer.");
+    }
+
+    if (parsed <= 0 || parsed > std::numeric_limits<int>::max()) {
+        throw std::runtime_error("Argument '" + std::string(key) + "' must be between 1 and " +
+                                 std::to_string(std::numeric_limits<int>::max()) + ".");
+    }
+
+    return static_cast<int>(parsed);
 }
 
 std::vector<std::string> optional_string_array_arg(const ToolCall& cmd, const char* key) {
@@ -159,7 +187,7 @@ ToolRegistry build_default_tool_registry() {
         .max_output_bytes = kMaxBashOutputBytes,
         .execute = [](const ToolCall& cmd, const AgentConfig& config, size_t output_limit) {
             const std::string command = require_string_arg(cmd, "command", "bash_execute_safe");
-            const int timeout_ms = optional_int_arg(cmd, "timeout_ms", 5000);
+            const int timeout_ms = parse_timeout_ms_arg(cmd, "timeout_ms", 5000);
             const auto res = bash_execute_safe(config.workspace_abs, command, timeout_ms, output_limit, output_limit);
             return nlohmann::json{
                 {"ok", res.ok},
