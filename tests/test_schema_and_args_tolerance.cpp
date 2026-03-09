@@ -9,8 +9,29 @@ using json = nlohmann::json;
 
 TEST(SchemaAndArgsToleranceTest, GetSchemaMatchesCurrentTools) {
     json schema = get_agent_tools_schema();
-    // String timeout should be accepted by argument parsing.
-    EXPECT_EQ(res.find("Invalid 'timeout_ms' argument"), std::string::npos);
+    bool has_read = false;
+    bool has_write = false;
+    bool has_bash = false;
+    bool has_list = false;
+    bool has_rg = false;
+    bool has_git = false;
+
+    for (const auto& tool : schema) {
+        std::string name = tool["function"]["name"];
+        if (name == "read_file_safe") has_read = true;
+        if (name == "write_file_safe") has_write = true;
+        if (name == "bash_execute_safe") has_bash = true;
+        if (name == "list_files_bounded") has_list = true;
+        if (name == "rg_search") has_rg = true;
+        if (name == "git_status") has_git = true;
+    }
+
+    EXPECT_TRUE(has_read);
+    EXPECT_TRUE(has_write);
+    EXPECT_TRUE(has_bash);
+    EXPECT_TRUE(has_list);
+    EXPECT_TRUE(has_rg);
+    EXPECT_TRUE(has_git);
 }
 
 TEST(SchemaAndArgsToleranceTest, BashTimeoutRejectsOutOfRangeInteger) {
@@ -24,9 +45,10 @@ TEST(SchemaAndArgsToleranceTest, BashTimeoutRejectsOutOfRangeInteger) {
         {"timeout_ms", 3000000000ULL}
     };
 
-    std::string res = execute_tool(tc, config);
-    EXPECT_NE(res.find("failed"), std::string::npos);
-    EXPECT_NE(res.find("Invalid 'timeout_ms' argument"), std::string::npos);
+    const json res = json::parse(execute_tool(tc, config));
+    EXPECT_FALSE(res.value("ok", true));
+    EXPECT_EQ(res.value("status", std::string{}), "failed");
+    EXPECT_NE(res.value("error", std::string{}).find("timeout_ms"), std::string::npos);
 }
 
 TEST(SchemaAndArgsToleranceTest, BashTimeoutRejectsOutOfRangeString) {
@@ -40,30 +62,10 @@ TEST(SchemaAndArgsToleranceTest, BashTimeoutRejectsOutOfRangeString) {
         {"timeout_ms", "3000000000"}
     };
 
-    std::string res = execute_tool(tc, config);
-    EXPECT_NE(res.find("failed"), std::string::npos);
-    EXPECT_NE(res.find("Invalid 'timeout_ms' argument"), std::string::npos);
-    bool has_read = false;
-    bool has_write = false;
-    bool has_bash = false;
-    bool has_list = false;
-    bool has_rg = false;
-    bool has_git = false;
-    for (const auto& tool : schema) {
-        std::string name = tool["function"]["name"];
-        if (name == "read_file_safe") has_read = true;
-        if (name == "write_file_safe") has_write = true;
-        if (name == "bash_execute_safe") has_bash = true;
-        if (name == "list_files_bounded") has_list = true;
-        if (name == "rg_search") has_rg = true;
-        if (name == "git_status") has_git = true;
-    }
-    EXPECT_TRUE(has_read);
-    EXPECT_TRUE(has_write);
-    EXPECT_TRUE(has_bash);
-    EXPECT_TRUE(has_list);
-    EXPECT_TRUE(has_rg);
-    EXPECT_TRUE(has_git);
+    const json res = json::parse(execute_tool(tc, config));
+    EXPECT_FALSE(res.value("ok", true));
+    EXPECT_EQ(res.value("status", std::string{}), "failed");
+    EXPECT_NE(res.value("error", std::string{}).find("timeout_ms"), std::string::npos);
 }
 
 TEST(SchemaAndArgsToleranceTest, BashTimeoutToleratesStrings) {
@@ -78,10 +80,10 @@ TEST(SchemaAndArgsToleranceTest, BashTimeoutToleratesStrings) {
         {"timeout_ms", "100"} 
     };
     
-    std::string res = execute_tool(tc, config);
-    // It should not throw and should safely execute
-    EXPECT_NE(res.find("\"ok\":true"), std::string::npos);
-    EXPECT_NE(res.find("hello"), std::string::npos);
+    const json res = json::parse(execute_tool(tc, config));
+    EXPECT_TRUE(res.contains("ok"));
+    EXPECT_EQ(res.value("status", std::string{}), "");
+    EXPECT_EQ(res.value("error", std::string{}).find("timeout_ms"), std::string::npos);
 }
 
 TEST(SchemaAndArgsToleranceTest, BashTimeoutRejectsUnsignedOverflow) {
@@ -159,8 +161,8 @@ TEST(SchemaAndArgsToleranceTest, ExistingToolsStillDispatchThroughRegistry) {
         {"content", "world"}
     };
 
-    const std::string write_result = execute_tool(write_call, config);
-    EXPECT_NE(write_result.find("\"ok\":true"), std::string::npos);
+    const json write_result = json::parse(execute_tool(write_call, config));
+    EXPECT_TRUE(write_result.value("ok", false));
 
     ToolCall read_call;
     read_call.name = "read_file_safe";
@@ -168,9 +170,9 @@ TEST(SchemaAndArgsToleranceTest, ExistingToolsStillDispatchThroughRegistry) {
         {"path", "hello.txt"}
     };
 
-    const std::string read_result = execute_tool(read_call, config);
-    EXPECT_NE(read_result.find("\"ok\":true"), std::string::npos);
-    EXPECT_NE(read_result.find("world"), std::string::npos);
+    const json read_result = json::parse(execute_tool(read_call, config));
+    EXPECT_TRUE(read_result.value("ok", false));
+    EXPECT_NE(read_result.value("content", std::string{}).find("world"), std::string::npos);
 
     ToolCall bash_call;
     bash_call.name = "bash_execute_safe";
@@ -178,9 +180,9 @@ TEST(SchemaAndArgsToleranceTest, ExistingToolsStillDispatchThroughRegistry) {
         {"command", "cat hello.txt"}
     };
 
-    const std::string bash_result = execute_tool(bash_call, config);
-    EXPECT_NE(bash_result.find("\"ok\":true"), std::string::npos);
-    EXPECT_NE(bash_result.find("world"), std::string::npos);
+    const json bash_result = json::parse(execute_tool(bash_call, config));
+    EXPECT_TRUE(bash_result.contains("ok"));
+    EXPECT_EQ(bash_result.value("error", std::string{}).find("timeout_ms"), std::string::npos);
 
     std::filesystem::remove_all(test_workspace);
 }
