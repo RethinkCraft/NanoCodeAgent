@@ -12,6 +12,7 @@
 #include <fstream>
 #include <map>
 #include <string>
+#include <type_traits>
 
 namespace fs = std::filesystem;
 
@@ -34,6 +35,47 @@ int run_bash(const std::string& command) {
     const std::string wrapped = "bash -lc '" + shell_escape_single_quotes(command) + "'";
     return std::system(wrapped.c_str());
 }
+
+class ScopedEnvVar {
+public:
+    ScopedEnvVar(const char* name, const std::string& value)
+        : name_(name ? name : "") {
+        if (name_.empty()) {
+            return;
+        }
+        if (const char* existing = std::getenv(name_.c_str())) {
+            had_original_ = true;
+            original_value_ = existing;
+        }
+        setenv(name_.c_str(), value.c_str(), 1);
+    }
+
+    ~ScopedEnvVar() {
+        if (name_.empty()) {
+            return;
+        }
+        if (had_original_) {
+            setenv(name_.c_str(), original_value_.c_str(), 1);
+        } else {
+            unsetenv(name_.c_str());
+        }
+    }
+
+    ScopedEnvVar(const ScopedEnvVar&) = delete;
+    ScopedEnvVar& operator=(const ScopedEnvVar&) = delete;
+    ScopedEnvVar(ScopedEnvVar&&) = delete;
+    ScopedEnvVar& operator=(ScopedEnvVar&&) = delete;
+
+private:
+    std::string name_;
+    std::string original_value_;
+    bool had_original_ = false;
+};
+
+static_assert(!std::is_copy_constructible_v<ScopedEnvVar>);
+static_assert(!std::is_copy_assignable_v<ScopedEnvVar>);
+static_assert(!std::is_move_constructible_v<ScopedEnvVar>);
+static_assert(!std::is_move_assignable_v<ScopedEnvVar>);
 
 } // namespace
 
@@ -359,4 +401,497 @@ TEST_F(RepoToolsTest, GitStatusExecutorEnforcesOutputLimit) {
     EXPECT_TRUE(result.contains("entries"));
     EXPECT_TRUE(result["entries"].is_array());
     EXPECT_EQ(result["returned"].get<size_t>(), result["entries"].size());
+}
+
+// ---------------------------------------------------------------------------
+// GitDiffTest: git_diff tool
+// ---------------------------------------------------------------------------
+
+class GitDiffTest : public ::testing::Test {
+protected:
+    std::string test_workspace;
+
+    void SetUp() override {
+        auto tick = std::chrono::steady_clock::now().time_since_epoch().count();
+        test_workspace = (fs::temp_directory_path() /
+                          ("nano_git_diff_" + std::to_string(tick))).string();
+        fs::create_directories(test_workspace);
+    }
+
+    void TearDown() override {
+        fs::remove_all(test_workspace);
+    }
+
+    void create_file(const std::string& rel_path, const std::string& content) {
+        fs::path p = fs::path(test_workspace) / rel_path;
+        fs::create_directories(p.parent_path());
+        std::ofstream out(p, std::ios::binary);
+        out << content;
+    }
+
+    void init_repo_with_commit(const std::string& filename = "base.txt",
+                                const std::string& content  = "initial content\n") {
+        ASSERT_EQ(run_bash("cd '" + test_workspace +
+                           "' && git init -b main >/dev/null 2>&1 &&"
+                           " git config user.email t@t.com &&"
+                           " git config user.name T"), 0);
+        create_file(filename, content);
+        ASSERT_EQ(run_bash("cd '" + test_workspace +
+                           "' && git add . >/dev/null 2>&1 &&"
+                           " git commit -m init >/dev/null 2>&1"), 0);
+    }
+};
+
+TEST_F(GitDiffTest, NonRepoReturnsStructuredError) {
+    // Plain temp directory, no .git → git diff must fail cleanly
+    const auto result = git_diff(test_workspace, false, {}, 3);
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_NE(result["error"].get<std::string>().find("git repository"),
+              std::string::npos)
+        << "error: " << result["error"];
+}
+
+TEST_F(GitDiffTest, CleanRepoReturnsOkWithEmptyDiff) {
+    init_repo_with_commit();
+    const auto result = git_diff(test_workspace, false, {}, 3);
+    ASSERT_TRUE(result["ok"].get<bool>()) << result["error"];
+    EXPECT_EQ(result["stdout"].get<std::string>(), "")
+        << "Clean repo diff should be empty";
+    EXPECT_FALSE(result["truncated"].get<bool>());
+}
+
+TEST_F(GitDiffTest, UnstagedModificationShowsPatch) {
+    init_repo_with_commit();
+    // Overwrite the tracked file without staging
+    create_file("base.txt", "modified content\n");
+
+    const auto result = git_diff(test_workspace, false, {}, 3);
+    ASSERT_TRUE(result["ok"].get<bool>()) << result["error"];
+    const std::string& out = result["stdout"].get<std::string>();
+    EXPECT_NE(out.find("---"), std::string::npos) << "Expected unified diff header";
+    EXPECT_NE(out.find("+++"), std::string::npos) << "Expected unified diff header";
+}
+
+TEST_F(GitDiffTest, CachedOnlyShowsStagedPatch) {
+    init_repo_with_commit();
+    create_file("base.txt", "staged change\n");
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git add base.txt"), 0);
+
+    const auto result = git_diff(test_workspace, /*cached=*/true, {}, 3);
+    ASSERT_TRUE(result["ok"].get<bool>()) << result["error"];
+    const std::string& out = result["stdout"].get<std::string>();
+    EXPECT_NE(out.find("@@"), std::string::npos)
+        << "Staged diff should contain hunk header";
+}
+
+TEST_F(GitDiffTest, DefaultDiffExcludesStagedChangesWhileCachedShowsOnlyStagedChanges) {
+    init_repo_with_commit();
+    create_file("staged.txt", "staged base\n");
+    create_file("unstaged.txt", "unstaged base\n");
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git add . >/dev/null 2>&1 && git commit -m split >/dev/null 2>&1"), 0);
+
+    create_file("staged.txt", "staged after\n");
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git add staged.txt"), 0);
+    create_file("unstaged.txt", "unstaged after\n");
+
+    const auto unstaged = git_diff(test_workspace, false, {}, 3);
+    ASSERT_TRUE(unstaged["ok"].get<bool>()) << unstaged["error"];
+    const std::string unstaged_out = unstaged["stdout"].get<std::string>();
+    EXPECT_NE(unstaged_out.find("a/unstaged.txt"), std::string::npos);
+    EXPECT_EQ(unstaged_out.find("a/staged.txt"), std::string::npos);
+
+    const auto staged = git_diff(test_workspace, true, {}, 3);
+    ASSERT_TRUE(staged["ok"].get<bool>()) << staged["error"];
+    const std::string staged_out = staged["stdout"].get<std::string>();
+    EXPECT_NE(staged_out.find("a/staged.txt"), std::string::npos);
+    EXPECT_EQ(staged_out.find("a/unstaged.txt"), std::string::npos);
+}
+
+TEST_F(GitDiffTest, PathspecFiltersFiles) {
+    // Need two TRACKED files both modified; git diff only shows tracked changes
+    ASSERT_EQ(run_bash("cd '" + test_workspace +
+                       "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com &&"
+                       " git config user.name T"), 0);
+    create_file("file1.txt", "original file1\n");
+    create_file("file2.txt", "original file2\n");
+    ASSERT_EQ(run_bash("cd '" + test_workspace +
+                       "' && git add . >/dev/null 2>&1 &&"
+                       " git commit -m init >/dev/null 2>&1"), 0);
+    // Modify both without staging
+    create_file("file1.txt", "changed file1\n");
+    create_file("file2.txt", "changed file2\n");
+
+    const auto result = git_diff(test_workspace, false, {"file1.txt"}, 3);
+    ASSERT_TRUE(result["ok"].get<bool>()) << result["error"];
+    const std::string& out = result["stdout"].get<std::string>();
+    EXPECT_NE(out.find("file1.txt"), std::string::npos);
+    EXPECT_EQ(out.find("file2.txt"), std::string::npos)
+        << "Pathspec should exclude file2.txt from diff";
+}
+
+TEST_F(GitDiffTest, LargeDiffIsBoundedAndMarked) {
+    init_repo_with_commit();
+    // Generate a large modification
+    std::string big;
+    big.reserve(5000);
+    for (int i = 0; i < 200; ++i) {
+        big += "line " + std::to_string(i) + " aaaaaa bbbbbb cccccc dddddd\n";
+    }
+    create_file("base.txt", big);
+
+    // Use a very small output_limit to force truncation
+    const auto result = git_diff(test_workspace, false, {}, 3, 200);
+    ASSERT_TRUE(result["ok"].get<bool>()) << result["error"];
+    EXPECT_TRUE(result["truncated"].get<bool>()) << result.dump();
+    EXPECT_EQ(result["exit_code"].get<int>(), 0) << result.dump();
+    EXPECT_LE(result["stdout"].get<std::string>().size(), 200u) << result.dump();
+}
+
+TEST_F(GitDiffTest, LargeSingleLineDiffIsBoundedAndMarked) {
+    init_repo_with_commit();
+    std::string single_line(12000, 'x');
+    single_line.push_back('\n');
+    create_file("base.txt", single_line);
+
+    const auto result = git_diff(test_workspace, false, {}, 3, 200);
+    ASSERT_TRUE(result["ok"].get<bool>()) << result["error"];
+    EXPECT_TRUE(result["truncated"].get<bool>()) << result.dump();
+    EXPECT_EQ(result["exit_code"].get<int>(), 0) << result.dump();
+    EXPECT_LE(result["stdout"].get<std::string>().size(), 200u) << result.dump();
+}
+
+TEST_F(GitDiffTest, ExactFitOutputLimitDoesNotTruncate) {
+    init_repo_with_commit();
+    create_file("base.txt", "exact fit line\n");
+
+    const auto baseline = git_diff(test_workspace, false, {}, 3, 0);
+    ASSERT_TRUE(baseline["ok"].get<bool>()) << baseline["error"];
+    const std::string baseline_out = baseline["stdout"].get<std::string>();
+    ASSERT_FALSE(baseline_out.empty());
+
+    const auto exact = git_diff(test_workspace, false, {}, 3, baseline_out.size());
+    ASSERT_TRUE(exact["ok"].get<bool>()) << exact["error"];
+    EXPECT_FALSE(exact["truncated"].get<bool>()) << exact.dump();
+    EXPECT_EQ(exact["stdout"].get<std::string>(), baseline_out) << exact.dump();
+}
+
+TEST_F(GitDiffTest, ContextLinesZeroIsHonored) {
+    init_repo_with_commit("base.txt", "one\ntwo\nthree\nfour\nfive\n");
+    create_file("base.txt", "one\nTWO\nthree\nfour\nfive\n");
+
+    const auto zero_ctx = git_diff(test_workspace, false, {}, 0);
+    const auto default_ctx = git_diff(test_workspace, false, {}, 3);
+    ASSERT_TRUE(zero_ctx["ok"].get<bool>()) << zero_ctx["error"];
+    ASSERT_TRUE(default_ctx["ok"].get<bool>()) << default_ctx["error"];
+
+    const std::string zero_out = zero_ctx["stdout"].get<std::string>();
+    const std::string default_out = default_ctx["stdout"].get<std::string>();
+    EXPECT_NE(zero_out.find("@@ -2 +2 @@"), std::string::npos) << zero_out;
+    EXPECT_EQ(zero_out.find("\n one\n"), std::string::npos) << zero_out;
+    EXPECT_NE(default_out.find("\n one\n"), std::string::npos) << default_out;
+}
+
+TEST_F(GitDiffTest, DirectHelperClampsHugeContextLines) {
+    init_repo_with_commit("base.txt", "one\ntwo\nthree\nfour\nfive\n");
+    create_file("base.txt", "one\nTWO\nthree\nfour\nfive\n");
+
+    const auto huge_ctx = git_diff(test_workspace, false, {}, 1000000);
+    const auto capped_ctx = git_diff(test_workspace, false, {}, 1000);
+    ASSERT_TRUE(huge_ctx["ok"].get<bool>()) << huge_ctx["error"];
+    ASSERT_TRUE(capped_ctx["ok"].get<bool>()) << capped_ctx["error"];
+    EXPECT_EQ(huge_ctx, capped_ctx);
+}
+
+TEST_F(GitDiffTest, ExternalDiffAndTextconvAreDisabled) {
+    init_repo_with_commit();
+    const fs::path helper = fs::path(test_workspace) / "fake-external-diff.sh";
+    {
+        std::ofstream out(helper);
+        out << "#!/bin/sh\n";
+        out << "printf 'external helper ran\\n'\n";
+    }
+    fs::permissions(helper,
+                    fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write |
+                    fs::perms::group_exec | fs::perms::group_read |
+                    fs::perms::others_exec | fs::perms::others_read);
+
+    create_file("base.txt", "changed via worktree\n");
+    ScopedEnvVar scoped_external_diff("GIT_EXTERNAL_DIFF", helper.string());
+    const auto result = git_diff(test_workspace, false, {}, 3);
+
+    ASSERT_TRUE(result["ok"].get<bool>()) << result["error"];
+    const std::string out = result["stdout"].get<std::string>();
+    EXPECT_EQ(out.find("external helper ran"), std::string::npos) << out;
+    EXPECT_NE(out.find("diff --git"), std::string::npos) << out;
+}
+
+// ---------------------------------------------------------------------------
+// GitShowTest: git_show tool
+// ---------------------------------------------------------------------------
+
+class GitShowTest : public ::testing::Test {
+protected:
+    std::string test_workspace;
+
+    void SetUp() override {
+        auto tick = std::chrono::steady_clock::now().time_since_epoch().count();
+        test_workspace = (fs::temp_directory_path() /
+                          ("nano_git_show_" + std::to_string(tick))).string();
+        fs::create_directories(test_workspace);
+    }
+
+    void TearDown() override {
+        fs::remove_all(test_workspace);
+    }
+
+    void create_file(const std::string& rel_path, const std::string& content) {
+        fs::path p = fs::path(test_workspace) / rel_path;
+        fs::create_directories(p.parent_path());
+        std::ofstream out(p, std::ios::binary);
+        out << content;
+    }
+
+    void init_repo_with_commit() {
+        ASSERT_EQ(run_bash("cd '" + test_workspace +
+                           "' && git init -b main >/dev/null 2>&1 &&"
+                           " git config user.email t@t.com &&"
+                           " git config user.name T"), 0);
+        create_file("hello.txt", "hello world\n");
+        ASSERT_EQ(run_bash("cd '" + test_workspace +
+                           "' && git add . >/dev/null 2>&1 &&"
+                           " git commit -m init >/dev/null 2>&1"), 0);
+    }
+};
+
+TEST_F(GitShowTest, NonRepoReturnsStructuredError) {
+    const auto result = git_show(test_workspace, "HEAD", true, true, {}, 3);
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_EQ(result["error"].get<std::string>(), "Current workspace is not a git repository.");
+}
+
+TEST_F(GitShowTest, MissingRevReturnsStructuredError) {
+    init_repo_with_commit();
+    const auto result = git_show(test_workspace, "", true, true, {}, 3);
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_NE(result["error"].get<std::string>().find("rev"), std::string::npos)
+        << "error: " << result["error"];
+}
+
+TEST_F(GitShowTest, HeadCommitShowsMetadataAndPatch) {
+    init_repo_with_commit();
+    const auto result = git_show(test_workspace, "HEAD", true, true, {}, 3);
+    ASSERT_TRUE(result["ok"].get<bool>()) << result["error"];
+    const std::string& out = result["stdout"].get<std::string>();
+    EXPECT_NE(out.find("commit"), std::string::npos)
+        << "git show HEAD should include commit line";
+}
+
+TEST_F(GitShowTest, InvalidRevReturnsStructuredError) {
+    init_repo_with_commit();
+    const auto result = git_show(test_workspace, "deadbeef00000000000000000000000000000001",
+                                 true, true, {}, 3);
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_FALSE(result["error"].get<std::string>().empty())
+        << "Invalid rev must set error field";
+    EXPECT_FALSE(result["stderr"].get<std::string>().empty())
+        << "Invalid rev should preserve raw stderr output";
+}
+
+TEST_F(GitShowTest, DashPrefixedRevIsRejectedBeforeGitOptionParsing) {
+    init_repo_with_commit();
+    const auto result = git_show(test_workspace, "--ext-diff", true, false, {}, 3);
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_EQ(result["exit_code"].get<int>(), -1);
+    EXPECT_EQ(result["error"].get<std::string>(),
+              "Argument 'rev' for git_show must not start with '-'.");
+    EXPECT_TRUE(result["stderr"].get<std::string>().empty());
+}
+
+TEST_F(GitShowTest, PatchCanBeDisabled) {
+    init_repo_with_commit();
+    const auto result = git_show(test_workspace, "HEAD", /*patch=*/false, /*stat=*/true, {}, 3);
+    ASSERT_TRUE(result["ok"].get<bool>()) << result["error"];
+    const std::string& out = result["stdout"].get<std::string>();
+    EXPECT_NE(out.find("1 file changed"), std::string::npos)
+        << "stat=true should preserve diffstat when patch=false; got: " << out;
+    // With --no-patch the unified diff lines starting with --- must be absent
+    EXPECT_EQ(out.find("\n---"), std::string::npos)
+        << "patch=false should suppress unified diff output; got: " << out;
+}
+
+TEST_F(GitShowTest, PathspecFiltersShownFiles) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace +
+                       "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com &&"
+                       " git config user.name T"), 0);
+    create_file("alpha.txt", "alpha content\n");
+    create_file("beta.txt",  "beta content\n");
+    ASSERT_EQ(run_bash("cd '" + test_workspace +
+                       "' && git add . >/dev/null 2>&1 &&"
+                       " git commit -m two-files >/dev/null 2>&1"), 0);
+
+    const auto result = git_show(test_workspace, "HEAD", true, false, {"alpha.txt"}, 3);
+    ASSERT_TRUE(result["ok"].get<bool>()) << result["error"];
+    const std::string& out = result["stdout"].get<std::string>();
+    EXPECT_NE(out.find("alpha.txt"), std::string::npos);
+    EXPECT_EQ(out.find("beta.txt"), std::string::npos)
+        << "pathspec should exclude beta.txt from git show output";
+}
+
+TEST_F(GitShowTest, LargeShowOutputIsBoundedAndMarked) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace +
+                       "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com &&"
+                       " git config user.name T"), 0);
+    std::string big;
+    big.reserve(6000);
+    for (int i = 0; i < 250; ++i) {
+        big += "line " + std::to_string(i) + " aaaa bbbb cccc dddd eeee ffff\n";
+    }
+    create_file("big.txt", big);
+    ASSERT_EQ(run_bash("cd '" + test_workspace +
+                       "' && git add . >/dev/null 2>&1 &&"
+                       " git commit -m big >/dev/null 2>&1"), 0);
+
+    const auto result = git_show(test_workspace, "HEAD", true, false, {}, 3, 300);
+    ASSERT_TRUE(result["ok"].get<bool>()) << result["error"];
+    EXPECT_TRUE(result["truncated"].get<bool>()) << result.dump();
+    EXPECT_EQ(result["exit_code"].get<int>(), 0) << result.dump();
+    EXPECT_LE(result["stdout"].get<std::string>().size(), 300u) << result.dump();
+}
+
+TEST_F(GitShowTest, LargeSingleLineShowIsBoundedAndMarked) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace +
+                       "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com &&"
+                       " git config user.name T"), 0);
+    std::string single_line(12000, 'y');
+    single_line.push_back('\n');
+    create_file("big.txt", single_line);
+    ASSERT_EQ(run_bash("cd '" + test_workspace +
+                       "' && git add . >/dev/null 2>&1 &&"
+                       " git commit -m big >/dev/null 2>&1"), 0);
+
+    const auto result = git_show(test_workspace, "HEAD", true, false, {}, 3, 300);
+    ASSERT_TRUE(result["ok"].get<bool>()) << result["error"];
+    EXPECT_TRUE(result["truncated"].get<bool>()) << result.dump();
+    EXPECT_EQ(result["exit_code"].get<int>(), 0) << result.dump();
+    EXPECT_LE(result["stdout"].get<std::string>().size(), 300u) << result.dump();
+}
+
+TEST_F(GitShowTest, ExactFitOutputLimitDoesNotTruncate) {
+    init_repo_with_commit();
+
+    const auto baseline = git_show(test_workspace, "HEAD", true, false, {}, 3, 0);
+    ASSERT_TRUE(baseline["ok"].get<bool>()) << baseline["error"];
+    const std::string baseline_out = baseline["stdout"].get<std::string>();
+    ASSERT_FALSE(baseline_out.empty());
+
+    const auto exact = git_show(test_workspace, "HEAD", true, false, {}, 3, baseline_out.size());
+    ASSERT_TRUE(exact["ok"].get<bool>()) << exact["error"];
+    EXPECT_FALSE(exact["truncated"].get<bool>()) << exact.dump();
+    EXPECT_EQ(exact["stdout"].get<std::string>(), baseline_out) << exact.dump();
+}
+
+TEST_F(GitShowTest, StatCanBeDisabled) {
+    init_repo_with_commit();
+    const auto result = git_show(test_workspace, "HEAD", true, false, {}, 3);
+    ASSERT_TRUE(result["ok"].get<bool>()) << result["error"];
+    const std::string out = result["stdout"].get<std::string>();
+    EXPECT_NE(out.find("diff --git"), std::string::npos) << out;
+    EXPECT_EQ(out.find("1 file changed"), std::string::npos) << out;
+}
+
+TEST_F(GitShowTest, PatchAndStatCanBothBeDisabled) {
+    init_repo_with_commit();
+    const auto result = git_show(test_workspace, "HEAD", false, false, {}, 3);
+    ASSERT_TRUE(result["ok"].get<bool>()) << result["error"];
+    const std::string out = result["stdout"].get<std::string>();
+    EXPECT_NE(out.find("commit "), std::string::npos) << out;
+    EXPECT_EQ(out.find("diff --git"), std::string::npos) << out;
+    EXPECT_EQ(out.find("1 file changed"), std::string::npos) << out;
+}
+
+TEST_F(GitShowTest, ContextLinesZeroIsHonored) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace +
+                       "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com &&"
+                       " git config user.name T"), 0);
+    create_file("ctx.txt", "one\ntwo\nthree\nfour\nfive\n");
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git add ctx.txt >/dev/null 2>&1 && git commit -m ctx >/dev/null 2>&1"), 0);
+    create_file("ctx.txt", "one\nTWO\nthree\nfour\nfive\n");
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git add ctx.txt >/dev/null 2>&1 && git commit -m ctx2 >/dev/null 2>&1"), 0);
+
+    const auto zero_ctx = git_show(test_workspace, "HEAD", true, false, {}, 0);
+    const auto default_ctx = git_show(test_workspace, "HEAD", true, false, {}, 3);
+    ASSERT_TRUE(zero_ctx["ok"].get<bool>()) << zero_ctx["error"];
+    ASSERT_TRUE(default_ctx["ok"].get<bool>()) << default_ctx["error"];
+
+    const std::string zero_out = zero_ctx["stdout"].get<std::string>();
+    const std::string default_out = default_ctx["stdout"].get<std::string>();
+    EXPECT_NE(zero_out.find("@@ -2 +2 @@"), std::string::npos) << zero_out;
+    EXPECT_EQ(zero_out.find("\n one\n"), std::string::npos) << zero_out;
+    EXPECT_NE(default_out.find("\n one\n"), std::string::npos) << default_out;
+}
+
+TEST_F(GitShowTest, DirectHelperClampsHugeContextLines) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace +
+                       "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com &&"
+                       " git config user.name T"), 0);
+    create_file("ctx.txt", "one\ntwo\nthree\nfour\nfive\n");
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git add ctx.txt >/dev/null 2>&1 && git commit -m ctx >/dev/null 2>&1"), 0);
+    create_file("ctx.txt", "one\nTWO\nthree\nfour\nfive\n");
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git add ctx.txt >/dev/null 2>&1 && git commit -m ctx2 >/dev/null 2>&1"), 0);
+
+    const auto huge_ctx = git_show(test_workspace, "HEAD", true, false, {}, 1000000);
+    const auto capped_ctx = git_show(test_workspace, "HEAD", true, false, {}, 1000);
+    ASSERT_TRUE(huge_ctx["ok"].get<bool>()) << huge_ctx["error"];
+    ASSERT_TRUE(capped_ctx["ok"].get<bool>()) << capped_ctx["error"];
+    EXPECT_EQ(huge_ctx, capped_ctx);
+}
+
+TEST_F(GitShowTest, ExternalDiffAndTextconvAreDisabled) {
+    init_repo_with_commit();
+    const fs::path helper = fs::path(test_workspace) / "fake-show-diff.sh";
+    {
+        std::ofstream out(helper);
+        out << "#!/bin/sh\n";
+        out << "printf 'external helper ran\\n'\n";
+    }
+    fs::permissions(helper,
+                    fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write |
+                    fs::perms::group_exec | fs::perms::group_read |
+                    fs::perms::others_exec | fs::perms::others_read);
+
+    ScopedEnvVar scoped_external_diff("GIT_EXTERNAL_DIFF", helper.string());
+    const auto result = git_show(test_workspace, "HEAD", true, false, {}, 3);
+
+    ASSERT_TRUE(result["ok"].get<bool>()) << result["error"];
+    const std::string out = result["stdout"].get<std::string>();
+    EXPECT_EQ(out.find("external helper ran"), std::string::npos) << out;
+    EXPECT_NE(out.find("diff --git"), std::string::npos) << out;
+}
+
+TEST_F(GitShowTest, DashPrefixedRevCannotBypassExternalDiffHardening) {
+    init_repo_with_commit();
+    const fs::path helper = fs::path(test_workspace) / "fake-show-diff-bypass.sh";
+    {
+        std::ofstream out(helper);
+        out << "#!/bin/sh\n";
+        out << "printf 'external helper ran\\n'\n";
+    }
+    fs::permissions(helper,
+                    fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write |
+                    fs::perms::group_exec | fs::perms::group_read |
+                    fs::perms::others_exec | fs::perms::others_read);
+
+    ScopedEnvVar scoped_external_diff("GIT_EXTERNAL_DIFF", helper.string());
+    const auto result = git_show(test_workspace, "--ext-diff", true, false, {}, 3);
+
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_EQ(result["error"].get<std::string>(),
+              "Argument 'rev' for git_show must not start with '-'.");
+    EXPECT_TRUE(result["stderr"].get<std::string>().empty());
 }

@@ -59,6 +59,10 @@ size_t optional_size_arg(const ToolCall& cmd, const char* key, size_t default_va
     throw std::runtime_error("Argument '" + std::string(key) + "' must be an integer.");
 }
 
+size_t optional_git_context_lines_arg(const ToolCall& cmd, const char* key, size_t default_value) {
+    return std::min(optional_size_arg(cmd, key, default_value), kMaxGitContextLines);
+}
+
 int parse_timeout_ms_arg(const ToolCall& cmd, const char* key, int default_value) {
     if (!cmd.arguments.contains(key)) {
         return default_value;
@@ -97,6 +101,27 @@ std::vector<std::string> optional_string_array_arg(const ToolCall& cmd, const ch
 
     std::vector<std::string> result;
     for (const auto& item : cmd.arguments.at(key)) {
+        result.push_back(item.get<std::string>());
+    }
+    return result;
+}
+
+std::vector<std::string> optional_string_array_arg_strict(const ToolCall& cmd, const char* key) {
+    if (!cmd.arguments.contains(key)) {
+        return {};
+    }
+
+    const auto& value = cmd.arguments.at(key);
+    if (!value.is_array()) {
+        throw std::runtime_error("Argument '" + std::string(key) + "' must be an array of strings.");
+    }
+
+    std::vector<std::string> result;
+    result.reserve(value.size());
+    for (const auto& item : value) {
+        if (!item.is_string()) {
+            throw std::runtime_error("Argument '" + std::string(key) + "' must be an array of strings.");
+        }
         result.push_back(item.get<std::string>());
     }
     return result;
@@ -477,6 +502,100 @@ ToolRegistry build_default_tool_registry() {
                     {"error", result.err}
                 };
             }
+        }
+    });
+
+    register_or_throw(&registry, ToolDescriptor{
+        .name = "git_diff",
+        .description = "Returns the unified diff for the workspace. "
+                       "By default shows unstaged changes; set cached=true for staged changes. "
+                       "Optionally filter by pathspecs and control hunk context with context_lines (default 3).",
+        .category = ToolCategory::ReadOnly,
+        .requires_approval = false,
+        .json_schema = make_parameters_schema({
+            {"cached", {
+                {"type", "boolean"},
+                {"description", "If true, show staged (cached) changes instead of unstaged ones. Default false."}
+            }},
+            {"pathspecs", {
+                {"type", "array"},
+                {"items", {{"type", "string"}}},
+                {"description", "Optional list of paths or patterns to restrict the diff."}
+            }},
+            {"context_lines", {
+                {"type", "integer"},
+                {"description", "Number of context lines around each hunk. Default 3."}
+            }}
+        }),
+        .max_output_bytes = kMaxRepoOutputBytes,
+        .execute = [](const ToolCall& cmd, const AgentConfig& config, size_t output_limit) {
+            bool cached = false;
+            if (cmd.arguments.contains("cached")) {
+                const auto& v = cmd.arguments.at("cached");
+                if (!v.is_boolean()) {
+                    throw std::runtime_error("Argument 'cached' must be a boolean.");
+                }
+                cached = v.get<bool>();
+            }
+            const size_t context_lines = optional_git_context_lines_arg(cmd, "context_lines", 3);
+            const std::vector<std::string> pathspecs = optional_string_array_arg_strict(cmd, "pathspecs");
+            return git_diff(config.workspace_abs, cached, pathspecs, context_lines, output_limit);
+        }
+    });
+
+    register_or_throw(&registry, ToolDescriptor{
+        .name = "git_show",
+        .description = "Shows information about a git object (commit, tag, etc.). "
+                       "rev is required. Optionally disable patch or stat output, filter by pathspecs, "
+                       "and control diff context with context_lines (default 3).",
+        .category = ToolCategory::ReadOnly,
+        .requires_approval = false,
+        .json_schema = make_parameters_schema({
+            {"rev", {
+                {"type", "string"},
+                {"description", "The git revision to show (e.g. HEAD, a commit SHA, a tag)."}
+            }},
+            {"patch", {
+                {"type", "boolean"},
+                {"description", "Include the unified diff patch. Default true."}
+            }},
+            {"stat", {
+                {"type", "boolean"},
+                {"description", "Include the diffstat summary. Default true."}
+            }},
+            {"pathspecs", {
+                {"type", "array"},
+                {"items", {{"type", "string"}}},
+                {"description", "Optional list of paths to restrict the shown diff."}
+            }},
+            {"context_lines", {
+                {"type", "integer"},
+                {"description", "Number of context lines around each hunk. Default 3."}
+            }}
+        }, {"rev"}),
+        .max_output_bytes = kMaxRepoOutputBytes,
+        .execute = [](const ToolCall& cmd, const AgentConfig& config, size_t output_limit) {
+            const std::string rev = require_string_arg(cmd, "rev", "git_show");
+            bool patch = true;
+            if (cmd.arguments.contains("patch")) {
+                const auto& v = cmd.arguments.at("patch");
+                if (!v.is_boolean()) {
+                    throw std::runtime_error("Argument 'patch' must be a boolean.");
+                }
+                patch = v.get<bool>();
+            }
+            bool stat = true;
+            if (cmd.arguments.contains("stat")) {
+                const auto& v = cmd.arguments.at("stat");
+                if (!v.is_boolean()) {
+                    throw std::runtime_error("Argument 'stat' must be a boolean.");
+                }
+                stat = v.get<bool>();
+            }
+            const size_t context_lines = optional_git_context_lines_arg(cmd, "context_lines", 3);
+            const std::vector<std::string> pathspecs = optional_string_array_arg_strict(cmd, "pathspecs");
+            return git_show(config.workspace_abs, rev, patch, stat, pathspecs,
+                            context_lines, output_limit);
         }
     });
 

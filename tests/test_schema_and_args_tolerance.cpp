@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "agent_tools.hpp"
 
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <set>
@@ -9,9 +10,31 @@
 
 using json = nlohmann::json;
 
+namespace {
+
+std::string shell_escape_single_quotes(const std::string& value) {
+    std::string escaped;
+    escaped.reserve(value.size());
+    for (char ch : value) {
+        if (ch == '\'') {
+            escaped += "'\\''";
+        } else {
+            escaped.push_back(ch);
+        }
+    }
+    return escaped;
+}
+
+int run_bash(const std::string& command) {
+    const std::string wrapped = "bash -lc '" + shell_escape_single_quotes(command) + "'";
+    return std::system(wrapped.c_str());
+}
+
+} // namespace
+
 TEST(SchemaAndArgsToleranceTest, GetSchemaMatchesCurrentTools) {
     json schema = get_agent_tools_schema();
-    EXPECT_EQ(schema.size(), 7u);
+    EXPECT_EQ(schema.size(), 9u);
 
     bool has_read        = false;
     bool has_write       = false;
@@ -20,6 +43,8 @@ TEST(SchemaAndArgsToleranceTest, GetSchemaMatchesCurrentTools) {
     bool has_rg          = false;
     bool has_git         = false;
     bool has_apply_patch = false;
+    bool has_git_diff    = false;
+    bool has_git_show    = false;
     for (const auto& tool : schema) {
         std::string name = tool["function"]["name"];
         if (name == "read_file_safe")   has_read        = true;
@@ -29,6 +54,8 @@ TEST(SchemaAndArgsToleranceTest, GetSchemaMatchesCurrentTools) {
         if (name == "rg_search")        has_rg          = true;
         if (name == "git_status")       has_git         = true;
         if (name == "apply_patch")      has_apply_patch = true;
+        if (name == "git_diff")         has_git_diff    = true;
+        if (name == "git_show")         has_git_show    = true;
     }
     EXPECT_TRUE(has_read);
     EXPECT_TRUE(has_write);
@@ -37,6 +64,8 @@ TEST(SchemaAndArgsToleranceTest, GetSchemaMatchesCurrentTools) {
     EXPECT_TRUE(has_rg);
     EXPECT_TRUE(has_git);
     EXPECT_TRUE(has_apply_patch);
+    EXPECT_TRUE(has_git_diff);
+    EXPECT_TRUE(has_git_show);
 }
 
 TEST(SchemaAndArgsToleranceTest, BashTimeoutRejectsOutOfRangeInteger) {
@@ -514,4 +543,237 @@ TEST(ApplyPatchSchemaTest, RuntimeRejectsUnknownTopLevelFieldBatchMode) {
         << "Unknown field in batch-mode call must be rejected";
     EXPECT_NE(res.find("extra_key"), std::string::npos)
         << "Error must name the offending field";
+}
+
+// ---------------------------------------------------------------------------
+// git_diff / git_show: schema and dispatch
+// ---------------------------------------------------------------------------
+
+TEST(SchemaAndArgsToleranceTest, SchemaIncludesGitDiffAndGitShow) {
+    json schema = get_agent_tools_schema();
+    bool has_git_diff = false;
+    bool has_git_show = false;
+    json git_diff_params;
+    json git_show_params;
+    for (const auto& tool : schema) {
+        const std::string name = tool["function"]["name"];
+        if (name == "git_diff") {
+            has_git_diff = true;
+            git_diff_params = tool["function"]["parameters"];
+        }
+        if (name == "git_show") {
+            has_git_show = true;
+            git_show_params = tool["function"]["parameters"];
+        }
+    }
+    EXPECT_TRUE(has_git_diff) << "git_diff must appear in tool schema";
+    EXPECT_TRUE(has_git_show) << "git_show must appear in tool schema";
+    ASSERT_TRUE(git_diff_params.is_object());
+    ASSERT_TRUE(git_show_params.is_object());
+    EXPECT_EQ(git_diff_params["properties"]["cached"]["type"], "boolean");
+    EXPECT_EQ(git_diff_params["properties"]["pathspecs"]["type"], "array");
+    EXPECT_EQ(git_diff_params["properties"]["pathspecs"]["items"]["type"], "string");
+    EXPECT_EQ(git_show_params["properties"]["patch"]["type"], "boolean");
+    EXPECT_EQ(git_show_params["properties"]["stat"]["type"], "boolean");
+    EXPECT_EQ(git_show_params["required"], json::array({"rev"}));
+}
+
+TEST(SchemaAndArgsToleranceTest, ExecuteToolDispatchesGitDiffAndGitShow) {
+    const auto ws =
+        (std::filesystem::temp_directory_path() /
+         ("nano_schema_gitdiff_" + std::to_string(getpid())))
+            .string();
+    std::filesystem::remove_all(ws);
+    std::filesystem::create_directories(ws);
+
+    // Initialise a minimal git repo so calls do not fail on missing-repo.
+    ASSERT_EQ(run_bash("cd '" + ws + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T &&"
+                       " touch .keep && git add . >/dev/null 2>&1 &&"
+                       " git commit -m init >/dev/null 2>&1"), 0);
+
+    AgentConfig config;
+    config.workspace_abs = ws;
+
+    // git_diff: expect a well-formed JSON response (not an "unknown tool" error).
+    ToolCall diff_call;
+    diff_call.name = "git_diff";
+    diff_call.arguments = json::object();
+    const std::string diff_res = execute_tool(diff_call, config);
+    const json diff_json = json::parse(diff_res);
+    EXPECT_TRUE(diff_json.contains("ok"))
+        << "git_diff dispatch must return JSON with 'ok' field; got: " << diff_res;
+
+    // git_show with a valid rev.
+    ToolCall show_call;
+    show_call.name = "git_show";
+    show_call.arguments = {{"rev", "HEAD"}};
+    const std::string show_res = execute_tool(show_call, config);
+    const json show_json = json::parse(show_res);
+    EXPECT_TRUE(show_json.contains("ok"))
+        << "git_show dispatch must return JSON with 'ok' field; got: " << show_res;
+
+    std::filesystem::remove_all(ws);
+}
+
+TEST(SchemaAndArgsToleranceTest, GitDiffClampsHugeContextLines) {
+    AgentConfig config;
+    const std::string ws =
+        (std::filesystem::temp_directory_path() /
+         ("nano_git_diff_clamp_test_" + std::to_string(getpid())))
+            .string();
+    std::filesystem::remove_all(ws);
+    std::filesystem::create_directories(ws);
+    config.workspace_abs = ws;
+
+    ASSERT_EQ(run_bash("cd '" + ws + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T &&"
+                       " printf 'one\\ntwo\\nthree\\nfour\\nfive\\n' > sample.txt &&"
+                       " git add sample.txt >/dev/null 2>&1 && git commit -m init >/dev/null 2>&1 &&"
+                       " printf 'one\\nTWO\\nthree\\nfour\\nfive\\n' > sample.txt"), 0);
+
+    ToolCall huge;
+    huge.name = "git_diff";
+    huge.arguments = {
+        {"context_lines", 1000000}
+    };
+
+    ToolCall capped;
+    capped.name = "git_diff";
+    capped.arguments = {
+        {"context_lines", 1000}
+    };
+
+    const std::string huge_res = execute_tool(huge, config);
+    const std::string capped_res = execute_tool(capped, config);
+    EXPECT_EQ(nlohmann::json::parse(huge_res), nlohmann::json::parse(capped_res));
+
+    std::filesystem::remove_all(ws);
+}
+
+TEST(SchemaAndArgsToleranceTest, GitShowClampsHugeContextLines) {
+    AgentConfig config;
+    const std::string ws =
+        (std::filesystem::temp_directory_path() /
+         ("nano_git_show_clamp_test_" + std::to_string(getpid())))
+            .string();
+    std::filesystem::remove_all(ws);
+    std::filesystem::create_directories(ws);
+    config.workspace_abs = ws;
+
+    ASSERT_EQ(run_bash("cd '" + ws + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T &&"
+                       " printf 'one\\ntwo\\nthree\\nfour\\nfive\\n' > sample.txt &&"
+                       " git add sample.txt >/dev/null 2>&1 && git commit -m init >/dev/null 2>&1 &&"
+                       " printf 'one\\nTWO\\nthree\\nfour\\nfive\\n' > sample.txt &&"
+                       " git add sample.txt >/dev/null 2>&1 && git commit -m second >/dev/null 2>&1"), 0);
+
+    ToolCall huge;
+    huge.name = "git_show";
+    huge.arguments = {
+        {"rev", "HEAD"},
+        {"context_lines", 1000000},
+        {"stat", false}
+    };
+
+    ToolCall capped;
+    capped.name = "git_show";
+    capped.arguments = {
+        {"rev", "HEAD"},
+        {"context_lines", 1000},
+        {"stat", false}
+    };
+
+    const std::string huge_res = execute_tool(huge, config);
+    const std::string capped_res = execute_tool(capped, config);
+    EXPECT_EQ(nlohmann::json::parse(huge_res), nlohmann::json::parse(capped_res));
+
+    std::filesystem::remove_all(ws);
+}
+
+TEST(SchemaAndArgsToleranceTest, GitDiffRejectsInvalidCachedType) {
+    AgentConfig config;
+    config.workspace_abs = ".";
+
+    ToolCall tc;
+    tc.name = "git_diff";
+    tc.arguments = {
+        {"cached", "true"}
+    };
+
+    const std::string res = execute_tool(tc, config);
+    EXPECT_NE(res.find("Argument 'cached' must be a boolean."), std::string::npos);
+}
+
+TEST(SchemaAndArgsToleranceTest, GitShowRejectsInvalidPatchType) {
+    AgentConfig config;
+    config.workspace_abs = ".";
+
+    ToolCall tc;
+    tc.name = "git_show";
+    tc.arguments = {
+        {"rev", "HEAD"},
+        {"patch", "false"}
+    };
+
+    const std::string res = execute_tool(tc, config);
+    EXPECT_NE(res.find("Argument 'patch' must be a boolean."), std::string::npos);
+}
+
+TEST(SchemaAndArgsToleranceTest, GitDiffRejectsInvalidPathspecElementType) {
+    AgentConfig config;
+    config.workspace_abs = ".";
+
+    ToolCall tc;
+    tc.name = "git_diff";
+    tc.arguments = {
+        {"pathspecs", json::array({1})}
+    };
+
+    const std::string res = execute_tool(tc, config);
+    EXPECT_NE(res.find("Argument 'pathspecs' must be an array of strings."), std::string::npos);
+}
+
+TEST(SchemaAndArgsToleranceTest, GitDiffRejectsNonArrayPathspecs) {
+    AgentConfig config;
+    config.workspace_abs = ".";
+
+    ToolCall tc;
+    tc.name = "git_diff";
+    tc.arguments = {
+        {"pathspecs", "not-an-array"}
+    };
+
+    const std::string res = execute_tool(tc, config);
+    EXPECT_NE(res.find("Argument 'pathspecs' must be an array of strings."), std::string::npos);
+}
+
+TEST(SchemaAndArgsToleranceTest, GitShowRejectsNonArrayPathspecs) {
+    AgentConfig config;
+    config.workspace_abs = ".";
+
+    ToolCall tc;
+    tc.name = "git_show";
+    tc.arguments = {
+        {"rev", "HEAD"},
+        {"pathspecs", "not-an-array"}
+    };
+
+    const std::string res = execute_tool(tc, config);
+    EXPECT_NE(res.find("Argument 'pathspecs' must be an array of strings."), std::string::npos);
+}
+
+TEST(SchemaAndArgsToleranceTest, GitShowRejectsInvalidPathspecElementType) {
+    AgentConfig config;
+    config.workspace_abs = ".";
+
+    ToolCall tc;
+    tc.name = "git_show";
+    tc.arguments = {
+        {"rev", "HEAD"},
+        {"pathspecs", json::array({1})}
+    };
+
+    const std::string res = execute_tool(tc, config);
+    EXPECT_NE(res.find("Argument 'pathspecs' must be an array of strings."), std::string::npos);
 }
