@@ -34,6 +34,34 @@ def extract_links(content: str) -> list[dict]:
     return links
 
 
+def slugify_heading(heading: str) -> str:
+    """Convert a Markdown heading to a simplified GitHub-style anchor slug."""
+    slug = re.sub(r"[^\w\s-]", "", heading.lower())
+    return re.sub(r"\s+", "-", slug).strip("-")
+
+
+def collect_anchors(content: str) -> set[str]:
+    """Collect unique heading anchors, accounting for duplicate headings."""
+    anchors: set[str] = set()
+    seen: dict[str, int] = {}
+
+    for line in content.splitlines():
+        if not line.startswith("#"):
+            continue
+
+        heading = line.lstrip("#").strip()
+        base_slug = slugify_heading(heading)
+        if not base_slug:
+            continue
+
+        count = seen.get(base_slug, 0)
+        slug = base_slug if count == 0 else f"{base_slug}-{count}"
+        anchors.add(slug)
+        seen[base_slug] = count + 1
+
+    return anchors
+
+
 def check_anchor(filepath: str, anchor: str) -> bool:
     """Check if a heading anchor exists in a Markdown file."""
     if not os.path.isfile(filepath):
@@ -44,15 +72,7 @@ def check_anchor(filepath: str, anchor: str) -> bool:
     except OSError:
         return False
 
-    # Convert headings to anchors (simplified GitHub-style)
-    for line in content.splitlines():
-        if line.startswith("#"):
-            heading = line.lstrip("#").strip()
-            slug = re.sub(r"[^\w\s-]", "", heading.lower())
-            slug = re.sub(r"\s+", "-", slug).strip("-")
-            if slug == anchor:
-                return True
-    return False
+    return anchor in collect_anchors(content)
 
 
 def main() -> None:

@@ -162,6 +162,25 @@ class TestVerifyLinks(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("nonexistent", r.stdout + r.stderr)
 
+    def test_duplicate_heading_anchors_pass(self):
+        r = run_script(
+            "verify_links.py",
+            os.path.join(FIXTURES, "good_duplicate_anchors.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertEqual(r.returncode, 0, f"stdout: {r.stdout}\nstderr: {r.stderr}")
+
+    def test_missing_duplicate_heading_anchor_fails(self):
+        r = run_script(
+            "verify_links.py",
+            os.path.join(FIXTURES, "bad_duplicate_anchors.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("#repeat-2", r.stdout + r.stderr)
+
 
 class TestVerifyCommands(unittest.TestCase):
     def test_good_doc_passes(self):

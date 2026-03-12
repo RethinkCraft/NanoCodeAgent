@@ -91,15 +91,9 @@ else
     log "  Skipping verification — no summary file to verify"
 fi
 
-# ── Step 7: Absolute path audit ───────────────────────────────────────
+# ── Step 7: Verification note ─────────────────────────────────────────
 if [ -f "$SUMMARY" ]; then
-    log "Step 7: Checking for absolute paths in $SUMMARY"
-    if grep -nE '`/[^`]*`' "$SUMMARY"; then
-        echo "  ⚠ WARNING: Absolute paths detected in $SUMMARY — please fix to use repo-relative paths"
-        VERIFY_FAILED=1
-    else
-        log "Step 7: OK — no absolute paths found"
-    fi
+    log "Step 7: OK — absolute path validation is handled by verify_paths.py"
 fi
 
 # ── Result ────────────────────────────────────────────────────────────
