@@ -75,6 +75,16 @@ class TestVerifyPaths(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("escapes repo root", r.stdout + r.stderr)
 
+    def test_absolute_backtick_path_fails(self):
+        r = run_script(
+            "verify_paths.py",
+            os.path.join(FIXTURES, "absolute_backtick_path.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("absolute path forbidden", r.stdout + r.stderr)
+
 
 class TestVerifyLinks(unittest.TestCase):
     def test_good_doc_passes(self):

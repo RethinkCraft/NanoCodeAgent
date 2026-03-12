@@ -78,6 +78,9 @@ def main() -> None:
 
     # Backtick paths are repo-relative
     for p in backtick_paths:
+        if os.path.isabs(p):
+            errors.append(f"{p} (absolute path forbidden)")
+            continue
         full = os.path.join(root, p)
         if not os.path.exists(full):
             errors.append(p)

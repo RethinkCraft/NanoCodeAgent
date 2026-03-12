@@ -94,7 +94,7 @@ fi
 # ── Step 7: Absolute path audit ───────────────────────────────────────
 if [ -f "$SUMMARY" ]; then
     log "Step 7: Checking for absolute paths in $SUMMARY"
-    if grep -nE '/home/|/Users/|/root/' "$SUMMARY"; then
+    if grep -nE '`/[^`]*`' "$SUMMARY"; then
         echo "  ⚠ WARNING: Absolute paths detected in $SUMMARY — please fix to use repo-relative paths"
         VERIFY_FAILED=1
     else
