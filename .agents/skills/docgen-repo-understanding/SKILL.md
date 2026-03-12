@@ -32,8 +32,8 @@ Establish a comprehensive, factual understanding of the entire repository before
    ```
    If the heading `## Documentation Automation Rules` is not found, **stop and report an error**. Do NOT fall back to reading the entire file or generic engineering rules.
 
-1. Run `scripts/docgen/repo_map.py --root . --output docs/generated/repo_map_test.md` to get the directory tree summary, key entry files, core module locations, and test/example distribution.
-2. Run `scripts/docgen/doc_inventory.py --root . --output docs/generated/doc_inventory_test.md` to get the current docs index and staleness risk.
+1. Run `scripts/docgen/repo_map.py --root . --output docs/generated/repo_map_output.md` to get the directory tree summary, key entry files, core module locations, and test/example distribution.
+2. Run `scripts/docgen/doc_inventory.py --root . --output docs/generated/doc_inventory_output.md` to get the current docs index and staleness risk.
 3. Run `scripts/docgen/example_inventory.py --root .` to map examples to tutorial sections.
 4. Read the top-level README, architecture docs, and key header files.
 5. Synthesize a structured understanding summary.

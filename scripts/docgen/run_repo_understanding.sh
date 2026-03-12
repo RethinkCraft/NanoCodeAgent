@@ -43,13 +43,13 @@ log "Step 2: OK — skill file exists"
 
 # ── Step 3: Run repo_map.py ───────────────────────────────────────────
 log "Step 3: Running repo_map.py"
-python3 scripts/docgen/repo_map.py --root . --output "$GENERATED/repo_map_test.md"
-log "Step 3: OK — wrote $GENERATED/repo_map_test.md"
+python3 scripts/docgen/repo_map.py --root . --output "$GENERATED/repo_map_output.md"
+log "Step 3: OK — wrote $GENERATED/repo_map_output.md"
 
 # ── Step 4: Run doc_inventory.py ──────────────────────────────────────
 log "Step 4: Running doc_inventory.py"
-python3 scripts/docgen/doc_inventory.py --root . --output "$GENERATED/doc_inventory_test.md"
-log "Step 4: OK — wrote $GENERATED/doc_inventory_test.md"
+python3 scripts/docgen/doc_inventory.py --root . --output "$GENERATED/doc_inventory_output.md"
+log "Step 4: OK — wrote $GENERATED/doc_inventory_output.md"
 
 # ── Step 5: Placeholder for repo_understanding_summary.md ─────────────
 # This step requires model synthesis. In non-interactive mode, the script

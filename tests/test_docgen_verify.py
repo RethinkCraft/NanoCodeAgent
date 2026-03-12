@@ -125,6 +125,25 @@ class TestVerifyPaths(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("absolute path forbidden", r.stdout + r.stderr)
 
+    def test_relative_backtick_path_with_spaces_passes(self):
+        r = run_script(
+            "verify_paths.py",
+            os.path.join(FIXTURES, "relative_backtick_path_with_spaces.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertEqual(r.returncode, 0, f"stdout: {r.stdout}\nstderr: {r.stderr}")
+
+    def test_missing_relative_backtick_path_with_spaces_fails(self):
+        r = run_script(
+            "verify_paths.py",
+            os.path.join(FIXTURES, "bad_backtick_path_with_spaces.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("space dir/missing.md", r.stdout + r.stderr)
+
 
 class TestVerifyLinks(unittest.TestCase):
     def test_good_doc_passes(self):
@@ -176,6 +195,16 @@ class TestVerifyDocConsistency(unittest.TestCase):
             "See `repo_map.py`, `agent_loop.cpp`, and `scripts/docgen/repo_map.py`."
         )
         self.assertEqual(filenames, ["scripts/docgen/repo_map.py"])
+
+    def test_extract_filenames_keeps_repo_paths_with_spaces(self):
+        filenames = extract_filenames(
+            "See `tests/fixtures/docgen/space dir/existing.md`."
+        )
+        self.assertEqual(filenames, ["tests/fixtures/docgen/space dir/existing.md"])
+
+    def test_extract_filenames_ignores_non_path_backticks_with_spaces(self):
+        filenames = extract_filenames("Route example: `GET /v1/health`.")
+        self.assertEqual(filenames, [])
 
     def test_good_doc_passes(self):
         r = run_script(

@@ -32,6 +32,21 @@ ROOT_DOTFILES = {
     ".gitignore",
 }
 
+REPO_TOP_LEVEL_DIRS = {
+    ".agents",
+    ".github",
+    "3rd-party",
+    "book",
+    "docs",
+    "include",
+    "prompts",
+    "scripts",
+    "src",
+    "tests",
+}
+
+PATH_SEGMENT_RE = re.compile(r"[A-Za-z0-9_.-](?:[A-Za-z0-9_. -]*[A-Za-z0-9_.-])?")
+
 
 def is_root_file_candidate(candidate: str) -> bool:
     """Return whether a bare token looks like a root-level repo file."""
@@ -51,9 +66,24 @@ def is_repo_reference(candidate: str) -> bool:
         return True
 
     if " " in candidate:
-        return False
+        return is_spaced_repo_reference(candidate)
 
     return "/" in candidate or is_root_file_candidate(candidate)
+
+
+def is_spaced_repo_reference(candidate: str) -> bool:
+    """Return whether a spaced token still looks like a repo-relative path."""
+    if "/" not in candidate:
+        return False
+
+    parts = candidate.split("/")
+    if any(not part for part in parts):
+        return False
+
+    if parts[0] not in REPO_TOP_LEVEL_DIRS:
+        return False
+
+    return all(PATH_SEGMENT_RE.fullmatch(part) for part in parts)
 
 
 def is_absolute_reference(candidate: str) -> bool:
