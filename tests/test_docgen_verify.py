@@ -85,6 +85,46 @@ class TestVerifyPaths(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("absolute path forbidden", r.stdout + r.stderr)
 
+    def test_absolute_link_path_fails(self):
+        r = run_script(
+            "verify_paths.py",
+            os.path.join(FIXTURES, "absolute_link_path.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("absolute path forbidden", r.stdout + r.stderr)
+
+    def test_windows_absolute_backtick_path_fails(self):
+        r = run_script(
+            "verify_paths.py",
+            os.path.join(FIXTURES, "windows_absolute_backtick_path.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("absolute path forbidden", r.stdout + r.stderr)
+
+    def test_windows_absolute_link_path_fails(self):
+        r = run_script(
+            "verify_paths.py",
+            os.path.join(FIXTURES, "windows_absolute_link_path.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("absolute path forbidden", r.stdout + r.stderr)
+
+    def test_absolute_backtick_path_with_spaces_fails(self):
+        r = run_script(
+            "verify_paths.py",
+            os.path.join(FIXTURES, "absolute_backtick_path_with_spaces.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("absolute path forbidden", r.stdout + r.stderr)
+
 
 class TestVerifyLinks(unittest.TestCase):
     def test_good_doc_passes(self):
@@ -175,6 +215,66 @@ class TestVerifyDocConsistency(unittest.TestCase):
         )
         self.assertEqual(r.returncode, 1, f"stdout: {r.stdout}\nstderr: {r.stderr}")
         self.assertIn("escapes repo root", r.stdout + r.stderr)
+
+    def test_bad_markdown_link_reference_fails(self):
+        r = run_script(
+            "verify_doc_consistency.py",
+            os.path.join(FIXTURES, "bad_consistency_links.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertEqual(r.returncode, 1, f"stdout: {r.stdout}\nstderr: {r.stderr}")
+        self.assertIn("fake_link_target.py", r.stdout + r.stderr)
+
+    def test_absolute_backtick_path_fails(self):
+        r = run_script(
+            "verify_doc_consistency.py",
+            os.path.join(FIXTURES, "absolute_backtick_path.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertEqual(r.returncode, 1, f"stdout: {r.stdout}\nstderr: {r.stderr}")
+        self.assertIn("absolute path forbidden", r.stdout + r.stderr)
+
+    def test_absolute_link_path_fails(self):
+        r = run_script(
+            "verify_doc_consistency.py",
+            os.path.join(FIXTURES, "absolute_link_path.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertEqual(r.returncode, 1, f"stdout: {r.stdout}\nstderr: {r.stderr}")
+        self.assertIn("absolute path forbidden", r.stdout + r.stderr)
+
+    def test_windows_absolute_backtick_path_fails(self):
+        r = run_script(
+            "verify_doc_consistency.py",
+            os.path.join(FIXTURES, "windows_absolute_backtick_path.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertEqual(r.returncode, 1, f"stdout: {r.stdout}\nstderr: {r.stderr}")
+        self.assertIn("absolute path forbidden", r.stdout + r.stderr)
+
+    def test_windows_absolute_link_path_fails(self):
+        r = run_script(
+            "verify_doc_consistency.py",
+            os.path.join(FIXTURES, "windows_absolute_link_path.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertEqual(r.returncode, 1, f"stdout: {r.stdout}\nstderr: {r.stderr}")
+        self.assertIn("absolute path forbidden", r.stdout + r.stderr)
+
+    def test_absolute_backtick_path_with_spaces_fails(self):
+        r = run_script(
+            "verify_doc_consistency.py",
+            os.path.join(FIXTURES, "absolute_backtick_path_with_spaces.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertEqual(r.returncode, 1, f"stdout: {r.stdout}\nstderr: {r.stderr}")
+        self.assertIn("absolute path forbidden", r.stdout + r.stderr)
 
 
 class TestRepoMap(unittest.TestCase):

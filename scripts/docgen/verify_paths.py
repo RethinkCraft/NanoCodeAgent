@@ -14,26 +14,17 @@ Arguments:
 
 Exit codes:
     0 — all paths valid
-    1 — one or more paths not found
+    1 — one or more path references are invalid or not found
 """
 
 import argparse
 import os
-import re
 import sys
 
 try:
-    from .path_utils import (
-        extract_markdown_link_targets,
-        is_repo_reference,
-        resolve_doc_relative_target,
-    )
+    from . import path_utils
 except ImportError:
-    from path_utils import (
-        extract_markdown_link_targets,
-        is_repo_reference,
-        resolve_doc_relative_target,
-    )
+    import path_utils
 
 
 def extract_paths(content: str) -> tuple[list[str], list[str]]:
@@ -42,19 +33,9 @@ def extract_paths(content: str) -> tuple[list[str], list[str]]:
     Returns (backtick_paths, link_targets) — backtick paths are repo-relative,
     link targets are document-relative.
     """
-    backtick_paths: set[str] = set()
-    link_targets: set[str] = set()
-
-    # Backtick-enclosed paths (e.g., `src/main.cpp`, `build.sh`)
-    for match in re.finditer(r"`([^`]+)`", content):
-        candidate = match.group(1).strip()
-        if is_repo_reference(candidate):
-            backtick_paths.add(candidate)
-
-    for target in extract_markdown_link_targets(content):
-        link_targets.add(target)
-
-    return sorted(backtick_paths), sorted(link_targets)
+    backtick_paths = path_utils.extract_backtick_repo_references(content)
+    link_targets = path_utils.extract_markdown_link_targets(content)
+    return backtick_paths, link_targets
 
 
 def main() -> None:
@@ -64,7 +45,6 @@ def main() -> None:
     args = parser.parse_args()
 
     root = os.path.abspath(args.root)
-    doc_dir = os.path.dirname(os.path.abspath(args.doc_file))
 
     if not os.path.isfile(args.doc_file):
         print(f"ERROR: {args.doc_file} not found.", file=sys.stderr)
@@ -78,7 +58,7 @@ def main() -> None:
 
     # Backtick paths are repo-relative
     for p in backtick_paths:
-        if os.path.isabs(p):
+        if path_utils.is_absolute_reference(p):
             errors.append(f"{p} (absolute path forbidden)")
             continue
         full = os.path.join(root, p)
@@ -87,7 +67,12 @@ def main() -> None:
 
     # Link targets are document-relative
     for p in link_targets:
-        _, full, in_repo = resolve_doc_relative_target(root, args.doc_file, p)
+        if path_utils.is_absolute_reference(p):
+            errors.append(f"{p} (absolute path forbidden)")
+            continue
+        _, full, in_repo = path_utils.resolve_doc_relative_target(
+            root, args.doc_file, p
+        )
         if not in_repo:
             errors.append(f"{p} (escapes repo root)")
             continue
@@ -97,7 +82,7 @@ def main() -> None:
     total = len(backtick_paths) + len(link_targets)
 
     if errors:
-        print(f"FAIL: {len(errors)} path(s) not found in {args.doc_file}:")
+        print(f"FAIL: {len(errors)} invalid path reference(s) in {args.doc_file}:")
         for e in errors:
             print(f"  - {e}")
         sys.exit(1)

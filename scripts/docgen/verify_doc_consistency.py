@@ -3,9 +3,9 @@
 
 Purpose:
     Verify that file paths, script references, and local Markdown link targets
-    mentioned in documentation exist in the repository. Path references under
-    ``scripts/`` and ``.agents/`` are treated as errors (exit 1); other missing
-    paths are warnings only.
+    mentioned in documentation exist in the repository. Absolute paths and path
+    references under ``scripts/`` and ``.agents/`` are treated as errors
+    (exit 1); other missing paths are warnings only.
 
 Usage:
     python3 scripts/docgen/verify_doc_consistency.py <doc-file> [--root <repo-root>]
@@ -28,21 +28,12 @@ Status: NON-BLOCKING — path / script existence checks only.
 
 import argparse
 import os
-import re
 import sys
 
 try:
-    from .path_utils import (
-        extract_markdown_link_targets,
-        is_repo_reference,
-        resolve_doc_relative_target,
-    )
+    from . import path_utils
 except ImportError:
-    from path_utils import (
-        extract_markdown_link_targets,
-        is_repo_reference,
-        resolve_doc_relative_target,
-    )
+    import path_utils
 
 
 # Prefixes whose absence is an error, not just a warning.
@@ -51,29 +42,30 @@ ERROR_PREFIXES = ("scripts/", ".agents/")
 
 def extract_filenames(content: str) -> list[str]:
     """Extract filenames mentioned in backticks."""
-    filenames: set[str] = set()
-    for match in re.finditer(r"`([^`]+)`", content):
-        candidate = match.group(1).strip()
-        if is_repo_reference(candidate):
-            filenames.add(candidate)
-    return sorted(filenames)
+    return path_utils.extract_backtick_repo_references(content)
 
 
 def extract_link_references(
     content: str, doc_file: str, root: str
-) -> tuple[list[tuple[str, str]], list[str]]:
+) -> tuple[list[tuple[str, str]], list[str], list[str]]:
     """Extract local Markdown link targets and resolve them for existence checks."""
     references: dict[str, str] = {}
     escaped: set[str] = set()
+    absolute: set[str] = set()
 
-    for target in extract_markdown_link_targets(content):
-        reference, full_path, in_repo = resolve_doc_relative_target(root, doc_file, target)
+    for target in path_utils.extract_markdown_link_targets(content):
+        if path_utils.is_absolute_reference(target):
+            absolute.add(target)
+            continue
+        reference, full_path, in_repo = path_utils.resolve_doc_relative_target(
+            root, doc_file, target
+        )
         if not in_repo:
             escaped.add(target)
             continue
         references.setdefault(reference, full_path)
 
-    return sorted(references.items()), sorted(escaped)
+    return sorted(references.items()), sorted(escaped), sorted(absolute)
 
 
 def main() -> None:
@@ -91,14 +83,25 @@ def main() -> None:
     with open(args.doc_file, "r", encoding="utf-8") as f:
         content = f.read()
 
-    references: dict[str, str] = {
-        filename: os.path.join(root, filename)
-        for filename in extract_filenames(content)
-    }
-    link_references, escaped_links = extract_link_references(content, args.doc_file, root)
-    references.update(link_references)
     errors: list[str] = []
     warnings: list[str] = []
+    references: dict[str, str] = {}
+
+    for filename in extract_filenames(content):
+        if path_utils.is_absolute_reference(filename):
+            errors.append(filename)
+            print(f"  ERROR  {filename} — absolute path forbidden")
+            continue
+        references[filename] = os.path.join(root, filename)
+
+    link_references, escaped_links, absolute_links = extract_link_references(
+        content, args.doc_file, root
+    )
+    references.update(link_references)
+
+    for target in absolute_links:
+        errors.append(target)
+        print(f"  ERROR  {target} — absolute path forbidden")
 
     for target in escaped_links:
         errors.append(target)

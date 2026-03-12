@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Shared helpers for docgen path detection."""
+"""Shared helpers for docgen path detection and resolution."""
 
+import ntpath
 import os
 import re
 
@@ -43,10 +44,33 @@ def is_root_file_candidate(candidate: str) -> bool:
 
 def is_repo_reference(candidate: str) -> bool:
     """Return whether a backtick token should be checked against the repo."""
-    if candidate.startswith("http") or candidate.startswith("-") or " " in candidate:
+    if candidate.startswith("http") or candidate.startswith("-"):
+        return False
+
+    if is_absolute_reference(candidate):
+        return True
+
+    if " " in candidate:
         return False
 
     return "/" in candidate or is_root_file_candidate(candidate)
+
+
+def is_absolute_reference(candidate: str) -> bool:
+    """Return whether a candidate is an absolute path on POSIX or Windows."""
+    return os.path.isabs(candidate) or ntpath.isabs(candidate)
+
+
+def extract_backtick_repo_references(content: str) -> list[str]:
+    """Extract unique repo-like references from backtick-enclosed content."""
+    references: set[str] = set()
+
+    for match in re.finditer(r"`([^`]+)`", content):
+        candidate = match.group(1).strip()
+        if is_repo_reference(candidate):
+            references.add(candidate)
+
+    return sorted(references)
 
 
 def extract_markdown_link_targets(content: str) -> list[str]:
