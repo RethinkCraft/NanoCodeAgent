@@ -29,7 +29,6 @@ Staleness heuristic:
 
 import argparse
 import os
-import re
 import sys
 from datetime import datetime, timezone
 
@@ -67,7 +66,9 @@ def newest_source_mtime(root: str) -> float | None:
     return newest
 
 
-def assess_staleness(doc_mtime: float, source_mtime: float | None, rel_path: str) -> str:
+def assess_staleness(
+    doc_mtime: float, source_mtime: float | None, rel_path: str
+) -> str:
     """Determine staleness risk for a documentation file."""
     # Infrastructure docs are always low risk
     infra_prefixes = ("docs/templates/", "docs/generated/")
@@ -104,15 +105,14 @@ def scan_docs(root: str, source_mtime: float | None) -> list[dict]:
                 fpath = os.path.join(dirpath, fname)
                 rel = os.path.relpath(fpath, root)
                 mtime = os.path.getmtime(fpath)
-                mtime_str = datetime.fromtimestamp(mtime, tz=timezone.utc).strftime("%Y-%m-%d")
+                mtime_str = datetime.fromtimestamp(mtime, tz=timezone.utc).strftime(
+                    "%Y-%m-%d"
+                )
                 title = extract_title(fpath)
                 risk = assess_staleness(mtime, source_mtime, rel)
-                entries.append({
-                    "path": rel,
-                    "title": title,
-                    "modified": mtime_str,
-                    "risk": risk,
-                })
+                entries.append(
+                    {"path": rel, "title": title, "modified": mtime_str, "risk": risk}
+                )
 
     return entries
 
@@ -130,17 +130,23 @@ def main() -> None:
     lines = ["# Documentation Inventory\n"]
 
     if source_mt is not None:
-        ref_date = datetime.fromtimestamp(source_mt, tz=timezone.utc).strftime("%Y-%m-%d")
+        ref_date = datetime.fromtimestamp(source_mt, tz=timezone.utc).strftime(
+            "%Y-%m-%d"
+        )
         lines.append(f"Source reference date (newest src/include file): {ref_date}\n")
     else:
         lines.append("Source reference date: N/A (no source files found)\n")
 
-    lines.append("Staleness heuristic: low (<=7 days behind source), medium (<=30 days), high (>30 days)\n")
+    lines.append(
+        "Staleness heuristic: low (<=7 days behind source), medium (<=30 days), high (>30 days)\n"
+    )
     lines.append("| Path | Title | Last Modified | Staleness Risk |")
     lines.append("|------|-------|---------------|----------------|")
 
     for e in entries:
-        lines.append(f"| `{e['path']}` | {e['title']} | {e['modified']} | {e['risk']} |")
+        lines.append(
+            f"| `{e['path']}` | {e['title']} | {e['modified']} | {e['risk']} |"
+        )
 
     lines.append("")
     output = "\n".join(lines) + "\n"

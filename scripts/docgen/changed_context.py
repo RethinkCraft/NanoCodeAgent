@@ -50,16 +50,16 @@ def get_changed_files(root: str, ref: str) -> list[str]:
 
 def find_adjacent_docs(root: str, filepath: str) -> list[str]:
     """Find documentation files related to a source file."""
-    adjacent: list[str] = []
+    adjacent: set[str] = set()
     # Look for docs in the same directory or parent
     dirname = os.path.dirname(filepath)
-    for search_dir in [dirname, os.path.dirname(dirname), "docs"]:
+    for search_dir in {dirname, os.path.dirname(dirname), "docs"}:
         full = os.path.join(root, search_dir)
         if os.path.isdir(full):
             for f in os.listdir(full):
                 if f.endswith(".md"):
-                    adjacent.append(os.path.join(search_dir, f))
-    return adjacent
+                    adjacent.add(os.path.join(search_dir, f))
+    return sorted(adjacent)
 
 
 def classify_module(filepath: str) -> str:
