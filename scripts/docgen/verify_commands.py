@@ -29,28 +29,53 @@ import sys
 import tempfile
 
 
-def extract_shell_blocks(content: str) -> list[str]:
-    """Extract content from shell/bash fenced code blocks."""
-    blocks: list[str] = []
-    pattern = re.compile(r"```(?:bash|sh|shell|console)\s*\n(.*?)```", re.DOTALL)
+HEREDOC_RE = re.compile(r"<<-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+def extract_shell_blocks(content: str) -> list[tuple[str, str]]:
+    """Extract shell-like fenced code blocks and their fence language."""
+    blocks: list[tuple[str, str]] = []
+    pattern = re.compile(r"```(bash|sh|shell|console)\s*\n(.*?)```", re.DOTALL)
     for match in pattern.finditer(content):
-        blocks.append(match.group(1).strip())
+        blocks.append((match.group(1), match.group(2).strip()))
     return blocks
 
 
-def strip_prompts(block: str) -> str:
-    """Strip prompt markers ($ , > ) from each line and drop comment-only lines."""
+def extract_heredoc_delimiters(command: str) -> list[str]:
+    """Extract heredoc delimiters that require following body lines."""
+    return [match.group(2) for match in HEREDOC_RE.finditer(command)]
+
+
+def strip_prompts(block: str, prompt_only: bool = False) -> str:
+    """Normalize shell snippets by trimming prompts and optional console output."""
     lines: list[str] = []
+    pending_heredocs: list[str] = []
+
     for line in block.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+        raw = line.rstrip()
+        stripped = raw.strip()
+
+        if prompt_only and pending_heredocs and not stripped.startswith(("$ ", "> ")):
+            lines.append(raw)
+            if stripped == pending_heredocs[0]:
+                pending_heredocs.pop(0)
             continue
+
+        if not stripped:
+            continue
+
         if stripped.startswith("$ "):
             stripped = stripped[2:]
         elif stripped.startswith("> "):
             stripped = stripped[2:]
+        elif prompt_only:
+            continue
+        elif stripped.startswith("#"):
+            continue
+
         if stripped:
             lines.append(stripped)
+            pending_heredocs.extend(extract_heredoc_delimiters(stripped))
     return "\n".join(lines)
 
 
@@ -89,8 +114,8 @@ def main() -> None:
         sys.exit(0)
 
     errors: list[str] = []
-    for i, block in enumerate(blocks, 1):
-        script = strip_prompts(block)
+    for i, (fence, block) in enumerate(blocks, 1):
+        script = strip_prompts(block, prompt_only=fence == "console")
         if not script:
             continue
         ok, stderr = check_syntax(script)
@@ -101,7 +126,9 @@ def main() -> None:
             print(f"  FAIL  block {i}: {stderr}")
 
     if errors:
-        print(f"\nFAILED: {len(errors)} block(s) have syntax errors in {args.doc_file}.")
+        print(
+            f"\nFAILED: {len(errors)} block(s) have syntax errors in {args.doc_file}."
+        )
         sys.exit(1)
     else:
         print(f"\nOK: all {len(blocks)} block(s) pass syntax check in {args.doc_file}.")

@@ -22,6 +22,11 @@ import os
 import re
 import sys
 
+try:
+    from . import path_utils
+except ImportError:
+    import path_utils
+
 
 def extract_links(content: str) -> list[dict]:
     """Extract Markdown links with their targets."""
@@ -29,7 +34,7 @@ def extract_links(content: str) -> list[dict]:
     for match in re.finditer(r"\[([^\]]*)\]\(([^)]+)\)", content):
         text = match.group(1)
         target = match.group(2).strip()
-        if not target.startswith("http"):
+        if target.startswith("#") or not path_utils.is_external_uri(target):
             links.append({"text": text, "target": target, "pos": match.start()})
     return links
 
@@ -92,15 +97,22 @@ def main() -> None:
 
     links = extract_links(content)
     errors: list[str] = []
-    doc_dir = os.path.dirname(os.path.abspath(args.doc_file))
 
     for link in links:
         target = link["target"]
         path_part, _, anchor = target.partition("#")
 
         if path_part:
-            # Resolve relative to the document's directory
-            full_path = os.path.normpath(os.path.join(doc_dir, path_part))
+            if path_utils.is_absolute_reference(path_part):
+                errors.append(f"absolute path forbidden: {target}")
+                continue
+
+            _, full_path, in_repo = path_utils.resolve_doc_relative_target(
+                root, args.doc_file, path_part
+            )
+            if not in_repo:
+                errors.append(f"broken path: {target} (escapes repo root)")
+                continue
             if not os.path.exists(full_path):
                 errors.append(f"broken path: {target}")
                 continue

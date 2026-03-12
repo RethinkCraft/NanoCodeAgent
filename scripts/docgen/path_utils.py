@@ -46,6 +46,8 @@ REPO_TOP_LEVEL_DIRS = {
 }
 
 PATH_SEGMENT_RE = re.compile(r"[A-Za-z0-9_.-](?:[A-Za-z0-9_. -]*[A-Za-z0-9_.-])?")
+URI_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+NO_SLASH_EXTERNAL_SCHEMES = {"data", "mailto", "news", "sms", "tel", "urn", "xmpp"}
 
 
 def is_root_file_candidate(candidate: str) -> bool:
@@ -59,7 +61,7 @@ def is_root_file_candidate(candidate: str) -> bool:
 
 def is_repo_reference(candidate: str) -> bool:
     """Return whether a backtick token should be checked against the repo."""
-    if candidate.startswith("http") or candidate.startswith("-"):
+    if is_external_uri(candidate) or candidate.startswith("-"):
         return False
 
     if is_absolute_reference(candidate):
@@ -88,7 +90,27 @@ def is_spaced_repo_reference(candidate: str) -> bool:
 
 def is_absolute_reference(candidate: str) -> bool:
     """Return whether a candidate is an absolute path on POSIX or Windows."""
-    return os.path.isabs(candidate) or ntpath.isabs(candidate)
+    return (
+        candidate.startswith("file://")
+        or os.path.isabs(candidate)
+        or ntpath.isabs(candidate)
+    )
+
+
+def is_external_uri(candidate: str) -> bool:
+    """Return whether a candidate is a non-file URI that should be skipped."""
+    if re.match(r"^[A-Za-z]:[\\/]", candidate):
+        return False
+
+    match = URI_SCHEME_RE.match(candidate)
+    if not match:
+        return False
+
+    scheme = match.group(0)[:-1].lower()
+    if scheme == "file":
+        return False
+
+    return "://" in candidate or scheme in NO_SLASH_EXTERNAL_SCHEMES
 
 
 def extract_backtick_repo_references(content: str) -> list[str]:
@@ -109,7 +131,7 @@ def extract_markdown_link_targets(content: str) -> list[str]:
 
     for match in re.finditer(r"\]\(([^)]+)\)", content):
         target = match.group(1).strip()
-        if not target.startswith("http") and not target.startswith("#"):
+        if not target.startswith("#") and not is_external_uri(target):
             target = target.split("#", 1)[0]
             if target:
                 targets.add(target)

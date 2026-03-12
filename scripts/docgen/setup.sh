@@ -42,7 +42,7 @@ echo "Git: $(git --version)"
 if python3 -m pytest --version &>/dev/null; then
     echo "pytest: available"
 else
-    echo "pytest: not installed (only needed for regression tests)"
+    echo "pytest: not installed (optional; bundled unittest regression tests still work)"
 fi
 
 # Verify we are in a git repo

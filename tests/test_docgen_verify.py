@@ -11,6 +11,8 @@ import subprocess
 import sys
 import unittest
 
+from scripts.docgen import path_utils
+from scripts.docgen.changed_context import classify_module
 from scripts.docgen.repo_map import relative_depth
 from scripts.docgen.verify_doc_consistency import extract_filenames
 
@@ -125,6 +127,25 @@ class TestVerifyPaths(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("absolute path forbidden", r.stdout + r.stderr)
 
+    def test_external_uri_links_are_ignored(self):
+        r = run_script(
+            "verify_paths.py",
+            os.path.join(FIXTURES, "external_uri_links.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertEqual(r.returncode, 0, f"stdout: {r.stdout}\nstderr: {r.stderr}")
+
+    def test_file_uri_link_fails(self):
+        r = run_script(
+            "verify_paths.py",
+            os.path.join(FIXTURES, "file_uri_link.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("absolute path forbidden", r.stdout + r.stderr)
+
     def test_relative_backtick_path_with_spaces_passes(self):
         r = run_script(
             "verify_paths.py",
@@ -181,6 +202,45 @@ class TestVerifyLinks(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("#repeat-2", r.stdout + r.stderr)
 
+    def test_external_uri_links_are_ignored(self):
+        r = run_script(
+            "verify_links.py",
+            os.path.join(FIXTURES, "external_uri_links.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertEqual(r.returncode, 0, f"stdout: {r.stdout}\nstderr: {r.stderr}")
+
+    def test_absolute_link_path_fails(self):
+        r = run_script(
+            "verify_links.py",
+            os.path.join(FIXTURES, "absolute_link_path.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("absolute path forbidden", r.stdout + r.stderr)
+
+    def test_file_uri_link_fails(self):
+        r = run_script(
+            "verify_links.py",
+            os.path.join(FIXTURES, "file_uri_link.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("absolute path forbidden", r.stdout + r.stderr)
+
+    def test_repo_escape_link_fails(self):
+        r = run_script(
+            "verify_links.py",
+            os.path.join(FIXTURES, "repo_escape_link.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("escapes repo root", r.stdout + r.stderr)
+
 
 class TestVerifyCommands(unittest.TestCase):
     def test_good_doc_passes(self):
@@ -197,6 +257,33 @@ class TestVerifyCommands(unittest.TestCase):
             REPO_ROOT,
         )
         self.assertEqual(r.returncode, 1, f"stdout: {r.stdout}\nstderr: {r.stderr}")
+
+    def test_console_transcript_passes(self):
+        r = run_script(
+            "verify_commands.py",
+            os.path.join(FIXTURES, "good_console_commands.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertEqual(r.returncode, 0, f"stdout: {r.stdout}\nstderr: {r.stderr}")
+
+    def test_bad_console_commands_fail(self):
+        r = run_script(
+            "verify_commands.py",
+            os.path.join(FIXTURES, "bad_console_commands.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertEqual(r.returncode, 1, f"stdout: {r.stdout}\nstderr: {r.stderr}")
+
+    def test_console_heredoc_transcript_passes(self):
+        r = run_script(
+            "verify_commands.py",
+            os.path.join(FIXTURES, "good_console_heredoc_commands.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertEqual(r.returncode, 0, f"stdout: {r.stdout}\nstderr: {r.stderr}")
 
 
 class TestVerifyDocConsistency(unittest.TestCase):
@@ -323,6 +410,52 @@ class TestVerifyDocConsistency(unittest.TestCase):
         )
         self.assertEqual(r.returncode, 1, f"stdout: {r.stdout}\nstderr: {r.stderr}")
         self.assertIn("absolute path forbidden", r.stdout + r.stderr)
+
+    def test_external_uri_links_are_ignored(self):
+        r = run_script(
+            "verify_doc_consistency.py",
+            os.path.join(FIXTURES, "external_uri_links.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertEqual(r.returncode, 0, f"stdout: {r.stdout}\nstderr: {r.stderr}")
+
+    def test_file_uri_link_fails(self):
+        r = run_script(
+            "verify_doc_consistency.py",
+            os.path.join(FIXTURES, "file_uri_link.md"),
+            "--root",
+            REPO_ROOT,
+        )
+        self.assertEqual(r.returncode, 1, f"stdout: {r.stdout}\nstderr: {r.stderr}")
+        self.assertIn("absolute path forbidden", r.stdout + r.stderr)
+
+
+class TestPathUtils(unittest.TestCase):
+    def test_non_file_uri_schemes_are_external(self):
+        self.assertTrue(path_utils.is_external_uri("mailto:docs@example.com"))
+        self.assertTrue(
+            path_utils.is_external_uri("ftp://example.com/releases/latest.txt")
+        )
+
+    def test_file_references_with_colons_are_not_treated_as_uris(self):
+        self.assertFalse(path_utils.is_external_uri("build.sh:42"))
+
+    def test_windows_paths_and_file_uris_are_not_external(self):
+        self.assertFalse(path_utils.is_external_uri("C:/Program Files/tool/bin.exe"))
+        self.assertFalse(path_utils.is_external_uri("file:///tmp/readme.md"))
+
+    def test_file_uris_are_absolute_references(self):
+        self.assertTrue(path_utils.is_absolute_reference("file:///tmp/readme.md"))
+
+
+class TestChangedContext(unittest.TestCase):
+    def test_classify_module_handles_git_style_paths(self):
+        self.assertEqual(classify_module("src/main.cpp"), "src")
+        self.assertEqual(classify_module("scripts/docgen/setup.sh"), "scripts")
+
+    def test_classify_module_handles_windows_separators(self):
+        self.assertEqual(classify_module(r"src\main.cpp"), "src")
 
 
 class TestRepoMap(unittest.TestCase):

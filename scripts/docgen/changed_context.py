@@ -64,7 +64,7 @@ def find_adjacent_docs(root: str, filepath: str) -> list[str]:
 
 def classify_module(filepath: str) -> str:
     """Determine which module a file belongs to."""
-    parts = filepath.split(os.sep)
+    parts = filepath.replace("\\", "/").split("/")
     if parts and parts[0] in ("src", "include", "tests", "scripts", "docs", "prompts"):
         return parts[0]
     return "other"
