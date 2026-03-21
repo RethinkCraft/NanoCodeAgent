@@ -171,10 +171,12 @@ def main() -> None:
     root = os.path.abspath(args.root)
 
     if args.format == "json":
-        _script_dir = os.path.dirname(os.path.abspath(__file__))
-        if _script_dir not in sys.path:
-            sys.path.insert(0, _script_dir)
-        from change_facts import collect_facts
+        # Support both `python3 -m scripts.docgen.changed_context` and the
+        # documented direct-script entrypoint `python3 scripts/docgen/changed_context.py`.
+        try:
+            from .change_facts import collect_facts
+        except ImportError:
+            from change_facts import collect_facts
         facts, _ = collect_facts(root, args.ref, args.files)
         out_path = args.output or os.path.join(root, "docs", "generated", "change_facts.json")
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)

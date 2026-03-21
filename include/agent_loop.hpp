@@ -17,7 +17,7 @@ struct AgentTurnResult {
 // Abstracting LLM chat completion
 using LLMStreamFunc = std::function<nlohmann::json(const AgentConfig&, const nlohmann::json&, const nlohmann::json&)>;
 
-// Runs the agent until no tools are requested, it hits limits, or fails fast.
+// Runs the agent until no tools are requested, it hits limits, or a fatal tool failure stops the run.
 void agent_run(const AgentConfig& config, 
                const std::string& system_prompt, 
                const std::string& user_prompt, 

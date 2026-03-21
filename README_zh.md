@@ -95,7 +95,7 @@ git submodule update --init --recursive
 - [x] 在运行时真正落地只读工具与修改型工具的权限/确认边界
 - [x] 增加 patch 校验与拒绝回退流程
 - [x] 支持围绕 CMake 与 `ctest` 的受限 build/test 循环
-- [ ] 强化失败恢复与基于 tool result 的重试提示
+- [x] 强化失败恢复与基于 tool result 的重试提示
 - [ ] 增加显式的提交封装流程，如 `git_add` 与 `git_commit`
 
 ### Phase 2

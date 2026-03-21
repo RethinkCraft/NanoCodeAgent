@@ -38,6 +38,16 @@ def run_bash(script_path: str, env: dict | None = None) -> subprocess.CompletedP
     )
 
 
+def run_module(module: str, *args: str, cwd: str | None = None) -> subprocess.CompletedProcess:
+    """Run a Python module and return the CompletedProcess."""
+    return subprocess.run(
+        [sys.executable, "-m", module, *args],
+        capture_output=True,
+        text=True,
+        cwd=cwd or REPO_ROOT,
+    )
+
+
 class TestChangeFacts(unittest.TestCase):
     """change_facts.py produces valid JSON with changed_files and diff_ref."""
 
@@ -78,6 +88,24 @@ class TestChangeFacts(unittest.TestCase):
 class TestChangedContext(unittest.TestCase):
     """changed_context.py runs with --format md (legacy) or default json."""
 
+    def test_changed_context_default_json_with_files_exits_zero(self):
+        import json
+
+        case_a = os.path.join(FIXTURES, "case_a_changed_files.txt")
+        out_path = os.path.join(tempfile.gettempdir(), "change_ctx_default.json")
+        r = run_script(
+            "changed_context.py",
+            "--root", REPO_ROOT,
+            "--files", case_a,
+            "--output", out_path,
+        )
+        self.assertEqual(r.returncode, 0, f"stdout: {r.stdout}\nstderr: {r.stderr}")
+        self.assertTrue(os.path.isfile(out_path))
+        with open(out_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertIn("changed_files", data)
+        self.assertIn("diff_ref", data)
+
     def test_changed_context_with_files_exits_zero(self):
         case_a = os.path.join(FIXTURES, "case_a_changed_files.txt")
         out_path = os.path.join(tempfile.gettempdir(), "change_ctx_a.md")
@@ -107,6 +135,23 @@ class TestChangedContext(unittest.TestCase):
             content = f.read()
         self.assertIn("# Changed File Context", content)
         self.assertIn("Impact perspective", content)
+
+    def test_changed_context_module_execution_with_files_exits_zero(self):
+        import json
+
+        case_a = os.path.join(FIXTURES, "case_a_changed_files.txt")
+        out_path = os.path.join(tempfile.gettempdir(), "change_ctx_module.json")
+        r = run_module(
+            "scripts.docgen.changed_context",
+            "--root", REPO_ROOT,
+            "--files", case_a,
+            "--output", out_path,
+        )
+        self.assertEqual(r.returncode, 0, f"stdout: {r.stdout}\nstderr: {r.stderr}")
+        self.assertTrue(os.path.isfile(out_path))
+        with open(out_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertIn("changed_files", data)
 
 
 class TestRunChangeImpact(unittest.TestCase):
