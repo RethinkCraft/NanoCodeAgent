@@ -29,7 +29,7 @@ For coding work, a task enters through CLI and config setup, flows through the a
 
 ## Current Status
 
-`Phase 0` is complete. The current baseline includes:
+`Phase 0` and `Phase 1` are complete. The current baseline includes:
 
 - CLI and runtime configuration
 - Agent loop and tool-calling basics
@@ -37,6 +37,8 @@ For coding work, a task enters through CLI and config setup, flows through the a
 - Safety-bounded `read`, `write`, and `bash` tools
 - Test infrastructure and deterministic mdBook validation
 - Change-aware documentation automation for README and book chapters, including scope decisions, reference context, blocking verify, and review/rework evidence
+
+`Phase 1` completes the in-repository coding workflow loop: structured git and patch tools, repository search, policy-gated mutations and approvals, bounded build/test, and `git_add` / `git_commit` for packaging changes.
 
 ## Documentation Automation
 
@@ -96,19 +98,26 @@ Goal: complete a stronger coding workflow loop inside a repository.
 - [x] add patch validation and rejection flow before writeback
 - [x] support bounded build/test execution loops for CMake and `ctest`
 - [x] improve failure recovery and retry guidance from tool results
-- [ ] add explicit commit packaging flow with `git_add` and `git_commit`
+- [x] add explicit commit packaging flow with `git_add` and `git_commit`
 
 ### Phase 2
 
-Goal: decouple reusable workflows into Skills.
+Goal: complete a local Agent Harness on top of the current CLI + tool loop (stateful core, extension, orchestration, robustness, and real-model validation—not a handful of unrelated features).
 
-- [ ] define the skill directory convention and metadata/frontmatter shape
-- [ ] implement a skill loader for workspace and shared skill locations
-- [ ] inject selected skills into prompt/session assembly
-- [ ] add built-in skills for C++ conventions, testing workflow, and git workflow
-- [ ] expose skill enablement through CLI and config
-- [ ] add skill execution traces and debugging output
-- [ ] dogfood one real repository maintenance workflow through skills
+- [ ] Stateful Core: memory, planning / task decomposition, session and state persistence
+- [ ] Extensibility Layer: rules, skills, MCP
+- [ ] Orchestration Layer: subagent and team/multi-agent orchestration
+- [ ] Robustness Layer: context compaction, budget control, safety/approval/execution boundary
+- [ ] Real-Model Harness: OpenAI-compatible model validation; benchmark, regression, e2e, and load testing
+
+### Phase 3
+
+Goal: Agent Boundary Expansion / Control Plane on the Phase 2 harness—external entry, control surface, trace UI, and daemon-style execution as adapters to one runtime (not a separate agent core per channel).
+
+- [ ] P3.1 Channel Adapter Layer: unify Telegram, WeChat, and other message entry behind a shared chat transport/adapter instead of per-platform agent logic
+- [ ] P3.2 Human-in-the-Loop Control Plane: approvals, resume, pause, cancel, new session, session restore, task status, asynchronous notifications
+- [ ] P3.3 UI / Trace Console: local or web UI for current plan, tool-call timeline, memory, subagent/team graph, compaction before/after, approval queue, diff preview, replay
+- [ ] P3.4 Remote Execution / Agent Daemon: long-lived or remote process so channels and UI attach to the same runtime, not only a local shell
 
 ### Docs Agent Milestone
 
@@ -126,9 +135,4 @@ This track follows a local validation first -> change-aware updates -> stronger 
 
 ## Future Directions
 
-Longer-term directions stay centered on the runtime itself:
-
-- MCP integration
-- Telegram or other remote interfaces
-- finer-grained sandbox and permission models
-- stronger autonomous coding workflows
+Concrete sequencing is in **Roadmap** above: **Phase 2** builds the full local Agent Harness; **Phase 3** adds the control plane and external boundaries around that harness. Broader explorations (for example finer-grained sandboxing beyond the current policy model) may still land inside those phases rather than as one-off spikes.
