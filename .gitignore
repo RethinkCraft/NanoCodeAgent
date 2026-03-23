@@ -167,6 +167,7 @@ docs/generated/
 
 # mdBook build output
 book/book/
+book/mermaid.min.js
 
 # Local git worktrees created for vendored submodules
 3rd-party/*.worktrees/

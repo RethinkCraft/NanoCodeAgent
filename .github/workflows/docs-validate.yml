@@ -144,14 +144,25 @@ jobs:
                   print(issue)
           PY
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install mdbook-mermaid
+        env:
+          MDBOOK_MERMAID_VERSION: '0.17.0'
+        run: cargo install mdbook-mermaid --locked --version "${MDBOOK_MERMAID_VERSION}"
+
       - name: Install mdBook
         env:
-          MDBOOK_VERSION: '0.4.36'
+          MDBOOK_VERSION: '0.5.2'
         run: |
           curl -fsSL "https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" -o /tmp/mdbook.tar.gz
           tar -xzf /tmp/mdbook.tar.gz -C /tmp
           sudo install /tmp/mdbook /usr/local/bin/mdbook
           mdbook --version
+
+      - name: Install mdbook-mermaid assets
+        run: mdbook-mermaid install book
 
       - name: Build mdBook
         run: mdbook build book

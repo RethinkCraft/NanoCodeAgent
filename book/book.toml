@@ -3,3 +3,9 @@ authors = ["Agent"]
 language = "zh-cn"
 src = "src"
 title = "Nano Agent Documentation"
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[output.html]
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
