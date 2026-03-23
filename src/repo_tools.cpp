@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <functional>
 #include <poll.h>
+#include <sstream>
 #include <string>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -38,6 +39,48 @@ struct ChildProcess {
     int stdout_fd = -1;
     int stderr_fd = -1;
 };
+
+struct GitTextCommandResult {
+    bool launched = false;
+    std::string stdout_text;
+    std::string stderr_text;
+    int exit_code = -1;
+    bool truncated = false;
+    bool killed_early = false;
+    std::string err;
+};
+
+nlohmann::json make_git_add_error_result(std::string stdout_text,
+                                         std::string stderr_text,
+                                         int exit_code,
+                                         bool truncated,
+                                         std::string error) {
+    return {
+        {"ok", false},
+        {"stdout", std::move(stdout_text)},
+        {"stderr", std::move(stderr_text)},
+        {"exit_code", exit_code},
+        {"truncated", truncated},
+        {"error", std::move(error)}
+    };
+}
+
+nlohmann::json make_git_commit_error_result(std::string stdout_text,
+                                            std::string stderr_text,
+                                            int exit_code,
+                                            std::string commit_sha,
+                                            bool truncated,
+                                            std::string error) {
+    return {
+        {"ok", false},
+        {"stdout", std::move(stdout_text)},
+        {"stderr", std::move(stderr_text)},
+        {"exit_code", exit_code},
+        {"commit_sha", std::move(commit_sha)},
+        {"truncated", truncated},
+        {"error", std::move(error)}
+    };
+}
 
 void close_fd(int fd) {
     if (fd >= 0) {
@@ -156,16 +199,41 @@ bool flush_excess_stdout_buffer(std::string* stdout_buffer,
     return true;
 }
 
-std::string normalize_git_repo_error(std::string failure) {
-    failure = trim_line_endings(std::move(failure));
-    std::string folded = failure;
-    std::transform(folded.begin(), folded.end(), folded.begin(), [](unsigned char ch) {
+std::string ascii_lower(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(), [](unsigned char ch) {
         return static_cast<char>(std::tolower(ch));
     });
+    return text;
+}
+
+std::string normalize_git_repo_error(std::string failure) {
+    failure = trim_line_endings(std::move(failure));
+    const std::string folded = ascii_lower(failure);
     if (folded.find("not a git repository") != std::string::npos) {
         return "Current workspace is not a git repository.";
     }
     return failure;
+}
+
+std::string normalize_git_commit_error(const std::string& stdout_text,
+                                       const std::string& stderr_text) {
+    std::string combined;
+    if (!stdout_text.empty()) {
+        combined += stdout_text;
+    }
+    if (!stderr_text.empty()) {
+        if (!combined.empty()) {
+            combined.push_back('\n');
+        }
+        combined += stderr_text;
+    }
+    combined = trim_line_endings(std::move(combined));
+    const std::string folded = ascii_lower(combined);
+    if (folded.find("nothing to commit") != std::string::npos ||
+        folded.find("no changes added to commit") != std::string::npos) {
+        return "No staged changes to commit.";
+    }
+    return normalize_git_repo_error(combined);
 }
 
 size_t clamp_git_context_lines(size_t context_lines) {
@@ -527,6 +595,7 @@ bool stream_command_stdout_lines(const std::string& executable,
                                  std::string* stderr_text,
                                  int* exit_code,
                                  bool* killed_early,
+                                 bool* stderr_truncated,
                                  std::string* err,
                                  size_t output_limit = 0) {
     ChildProcess child;
@@ -537,6 +606,7 @@ bool stream_command_stdout_lines(const std::string& executable,
     if (stderr_text) stderr_text->clear();
     if (exit_code) *exit_code = -1;
     if (killed_early) *killed_early = false;
+    if (stderr_truncated) *stderr_truncated = false;
 
     std::string stdout_buffer;
     char buffer[4096];
@@ -626,6 +696,11 @@ bool stream_command_stdout_lines(const std::string& executable,
                         if (stderr_text && stderr_text->size() < kMaxCommandStderrBytes) {
                             const size_t keep = std::min(static_cast<size_t>(n), kMaxCommandStderrBytes - stderr_text->size());
                             stderr_text->append(buffer, keep);
+                            if (keep < static_cast<size_t>(n) && stderr_truncated) {
+                                *stderr_truncated = true;
+                            }
+                        } else if (stderr_truncated) {
+                            *stderr_truncated = true;
                         }
                         continue;
                     }
@@ -818,6 +893,365 @@ bool stream_command_stdout_records(const std::string& executable,
     }
 
     return err == nullptr || err->empty();
+}
+
+GitTextCommandResult run_git_text_command(const std::string& git_binary,
+                                          const std::vector<std::string>& args,
+                                          const std::string& workspace_abs,
+                                          size_t output_limit) {
+    GitTextCommandResult result;
+    bool stderr_truncated = false;
+    auto on_line = [&](const std::string& line) -> bool {
+        return append_bounded_output_line(&result.stdout_text, line, output_limit, &result.truncated);
+    };
+
+    result.launched = stream_command_stdout_lines(git_binary, args, workspace_abs,
+                                                  on_line, &result.stderr_text, &result.exit_code,
+                                                  &result.killed_early, &stderr_truncated,
+                                                  &result.err, output_limit);
+    if (!result.stdout_text.empty() && result.stdout_text.back() == '\n') {
+        result.stdout_text.pop_back();
+    }
+    result.stderr_text = trim_line_endings(std::move(result.stderr_text));
+    result.truncated = result.truncated || stderr_truncated;
+    return result;
+}
+
+bool starts_with_path_component(const std::string& path, const std::string& prefix) {
+    if (prefix.empty()) {
+        return true;
+    }
+    return path == prefix || path.starts_with(prefix + "/");
+}
+
+bool resolve_workspace_relative_git_path(const std::string& workspace_abs,
+                                         const std::string& input,
+                                         std::string* normalized_rel,
+                                         std::string* err) {
+    if (input.empty()) {
+        if (err) *err = "Argument 'pathspecs' for git_add must not contain empty path strings.";
+        return false;
+    }
+    if (input.front() == ':') {
+        if (err) *err = "Git pathspec magic is not supported for git_add.";
+        return false;
+    }
+
+    AgentConfig cfg;
+    cfg.workspace_abs = workspace_abs;
+
+    std::string safe_abs;
+    std::string resolve_err;
+    if (!workspace_resolve(cfg, input, &safe_abs, &resolve_err)) {
+        if (err) *err = "Path must stay within the workspace: " + resolve_err;
+        return false;
+    }
+
+    const fs::path rel_path = fs::path(safe_abs).lexically_relative(fs::path(workspace_abs));
+    if (rel_path.empty()) {
+        if (normalized_rel) *normalized_rel = ".";
+    } else {
+        if (normalized_rel) *normalized_rel = rel_path.generic_string();
+    }
+    return true;
+}
+
+bool get_repo_root_and_workspace_prefix(const std::string& git_binary,
+                                        const std::string& workspace_abs,
+                                        std::string* repo_root,
+                                        std::string* workspace_prefix,
+                                        std::string* err) {
+    const std::vector<std::string> args = {git_binary, "rev-parse", "--show-toplevel"};
+    GitTextCommandResult result = run_git_text_command(git_binary, args, workspace_abs, 0);
+    if (!result.launched) {
+        if (err) *err = result.err.empty() ? result.stderr_text : result.err;
+        return false;
+    }
+    if (result.exit_code != 0) {
+        if (err) *err = normalize_git_repo_error(result.stderr_text);
+        return false;
+    }
+
+    const fs::path repo_root_path = fs::path(trim_line_endings(result.stdout_text)).lexically_normal();
+    const fs::path workspace_path = fs::path(workspace_abs).lexically_normal();
+    const fs::path relative = workspace_path.lexically_relative(repo_root_path);
+    const std::string relative_text = relative.generic_string();
+    if (relative.empty() && workspace_path != repo_root_path) {
+        if (err) *err = "Current workspace is not inside the git repository root.";
+        return false;
+    }
+    if (relative_text == ".." || relative_text.starts_with("../")) {
+        if (err) *err = "Current workspace is not inside the git repository root.";
+        return false;
+    }
+
+    if (repo_root) *repo_root = repo_root_path.string();
+    if (workspace_prefix) *workspace_prefix = (relative_text == "." ? "" : relative_text);
+    return true;
+}
+
+bool list_staged_paths(const std::string& git_binary,
+                       const std::string& workspace_abs,
+                       std::vector<std::string>* staged_paths,
+                       std::string* stderr_text,
+                       int* exit_code,
+                       std::string* err) {
+    const std::vector<std::string> args = {
+        git_binary,
+        "diff",
+        "--cached",
+        "--name-status",
+        "-z",
+        "--"
+    };
+
+    if (staged_paths) {
+        staged_paths->clear();
+    }
+
+    bool killed_early = false;
+    std::vector<std::string> records;
+    const bool launched = stream_command_stdout_records(
+        git_binary,
+        args,
+        workspace_abs,
+        '\0',
+        [&](const std::string& record) -> bool {
+            records.push_back(record);
+            return true;
+        },
+        stderr_text,
+        exit_code,
+        &killed_early,
+        err);
+    if (!launched) {
+        return false;
+    }
+
+    for (size_t i = 0; i < records.size(); ++i) {
+        const std::string& status = records[i];
+        if (status.empty()) {
+            continue;
+        }
+
+        const auto push_path = [&](const std::string& path_text) {
+            if (!path_text.empty() && staged_paths) {
+                staged_paths->push_back(fs::path(path_text).lexically_normal().generic_string());
+            }
+        };
+
+        const char code = status[0];
+        if ((code == 'R' || code == 'C') && status.size() >= 2) {
+            if (i + 2 >= records.size()) {
+                if (err) *err = "Failed to parse staged rename/copy paths before git commit.";
+                return false;
+            }
+            push_path(records[i + 1]);
+            push_path(records[i + 2]);
+            i += 2;
+            continue;
+        }
+
+        if (i + 1 >= records.size()) {
+            if (err) *err = "Failed to parse staged paths before git commit.";
+            return false;
+        }
+        push_path(records[i + 1]);
+        i += 1;
+    }
+
+    return true;
+}
+
+bool resolve_head_sha(const std::string& git_binary,
+                      const std::string& workspace_abs,
+                      std::string* head_sha,
+                      std::string* err) {
+    const std::vector<std::string> args = {git_binary, "rev-parse", "HEAD"};
+    GitTextCommandResult result = run_git_text_command(git_binary, args, workspace_abs, 0);
+    if (!result.launched) {
+        if (err) *err = result.err.empty() ? result.stderr_text : result.err;
+        return false;
+    }
+    if (result.exit_code != 0) {
+        const std::string normalized = normalize_git_repo_error(result.stderr_text);
+        const std::string folded = ascii_lower(normalized);
+        if (folded.find("unknown revision or path not in the working tree") != std::string::npos ||
+            folded.find("ambiguous argument 'head'") != std::string::npos ||
+            folded.find("needed a single revision") != std::string::npos) {
+            if (head_sha) head_sha->clear();
+            return true;
+        }
+        if (err) *err = normalized;
+        return false;
+    }
+
+    if (head_sha) {
+        *head_sha = trim_line_endings(result.stdout_text);
+    }
+    return true;
+}
+
+bool list_head_reflog_shas(const std::string& git_binary,
+                           const std::string& workspace_abs,
+                           std::vector<std::string>* shas,
+                           std::string* err) {
+    const std::vector<std::string> args = {git_binary, "reflog", "--format=%H", "HEAD"};
+    GitTextCommandResult result = run_git_text_command(git_binary, args, workspace_abs, 0);
+    if (!result.launched) {
+        if (err) *err = result.err.empty() ? result.stderr_text : result.err;
+        return false;
+    }
+    if (result.exit_code != 0) {
+        const std::string normalized = normalize_git_repo_error(result.stderr_text);
+        const std::string folded = ascii_lower(normalized);
+        if (folded.find("unknown revision or path not in the working tree") != std::string::npos ||
+            folded.find("ambiguous argument 'head'") != std::string::npos ||
+            folded.find("needed a single revision") != std::string::npos ||
+            folded.find("your current branch 'main' does not have any commits yet") != std::string::npos ||
+            folded.find("your current branch does not have any commits yet") != std::string::npos) {
+            if (shas) shas->clear();
+            return true;
+        }
+        if (err) *err = normalized;
+        return false;
+    }
+
+    if (shas) {
+        shas->clear();
+        std::istringstream lines(result.stdout_text);
+        for (std::string line; std::getline(lines, line);) {
+            line = trim_line_endings(std::move(line));
+            if (!line.empty()) {
+                shas->push_back(line);
+            }
+        }
+    }
+    return true;
+}
+
+struct GitCommitObservedState {
+    std::string head_sha;
+    std::vector<std::string> reflog_shas;
+};
+
+bool capture_git_commit_observed_state(const std::string& git_binary,
+                                       const std::string& workspace_abs,
+                                       const std::string& head_failure_message,
+                                       const std::string& reflog_failure_message,
+                                       GitCommitObservedState* state,
+                                       std::string* err) {
+    if (!state) {
+        if (err) *err = "Internal error: missing git commit observed state output.";
+        return false;
+    }
+
+    state->head_sha.clear();
+    state->reflog_shas.clear();
+
+    std::string head_err;
+    if (!resolve_head_sha(git_binary, workspace_abs, &state->head_sha, &head_err)) {
+        if (err) *err = head_err.empty() ? head_failure_message : head_err;
+        return false;
+    }
+
+    std::string reflog_err;
+    if (!list_head_reflog_shas(git_binary, workspace_abs, &state->reflog_shas, &reflog_err)) {
+        if (err) *err = reflog_err.empty() ? reflog_failure_message : reflog_err;
+        return false;
+    }
+
+    return true;
+}
+
+std::string first_new_commit_from_reflog(const std::vector<std::string>& before,
+                                         const std::vector<std::string>& after) {
+    if (after.size() < before.size()) {
+        return "";
+    }
+
+    const size_t new_count = after.size() - before.size();
+    for (size_t i = 0; i < before.size(); ++i) {
+        if (after[new_count + i] != before[i]) {
+            return "";
+        }
+    }
+
+    if (new_count == 0) {
+        return "";
+    }
+    return after[new_count - 1];
+}
+
+bool resolve_created_commit_sha_from_ancestry(const std::string& git_binary,
+                                              const std::string& workspace_abs,
+                                              const std::string& head_before,
+                                              const std::string& head_after,
+                                              std::string* commit_sha,
+                                              std::string* err) {
+    if (commit_sha) {
+        commit_sha->clear();
+    }
+    if (head_after.empty()) {
+        return true;
+    }
+
+    std::vector<std::string> args = {git_binary, "rev-list", "--reverse"};
+    if (head_before.empty()) {
+        args.push_back(head_after);
+    } else {
+        args.push_back("--ancestry-path");
+        args.push_back(head_before + ".." + head_after);
+    }
+
+    GitTextCommandResult result = run_git_text_command(git_binary, args, workspace_abs, 0);
+    if (!result.launched) {
+        if (err) *err = result.err.empty() ? result.stderr_text : result.err;
+        return false;
+    }
+    if (result.exit_code != 0) {
+        if (err) *err = normalize_git_repo_error(result.stderr_text);
+        return false;
+    }
+
+    std::istringstream lines(result.stdout_text);
+    std::string first_commit;
+    for (std::string line; std::getline(lines, line);) {
+        line = trim_line_endings(std::move(line));
+        if (!line.empty()) {
+            first_commit = line;
+            break;
+        }
+    }
+
+    if (commit_sha) {
+        *commit_sha = first_commit;
+    }
+    return true;
+}
+
+bool resolve_created_commit_sha(const std::string& git_binary,
+                                const std::string& workspace_abs,
+                                const std::string& head_before,
+                                const std::string& head_after,
+                                const std::vector<std::string>& reflog_before,
+                                const std::vector<std::string>& reflog_after,
+                                std::string* commit_sha,
+                                std::string* err) {
+    if (commit_sha) {
+        commit_sha->clear();
+    }
+
+    const std::string from_reflog = first_new_commit_from_reflog(reflog_before, reflog_after);
+    if (!from_reflog.empty()) {
+        if (commit_sha) {
+            *commit_sha = from_reflog;
+        }
+        return true;
+    }
+
+    return resolve_created_commit_sha_from_ancestry(
+        git_binary, workspace_abs, head_before, head_after, commit_sha, err);
 }
 
 std::string join_relative_path(const std::string& base, const std::string& child) {
@@ -1130,7 +1564,8 @@ nlohmann::json rg_search(const std::string& workspace_abs,
         return true;
     };
 
-    if (!stream_command_stdout_lines(rg_binary, args, abs_directory, on_line, &stderr_text, &exit_code, &killed_early, &err)) {
+    if (!stream_command_stdout_lines(rg_binary, args, abs_directory, on_line, &stderr_text, &exit_code, &killed_early,
+                                     nullptr, &err)) {
         if (parse_failed) {
             err = parse_error;
         } else if (err.empty()) {
@@ -1410,7 +1845,7 @@ nlohmann::json git_diff(const std::string& workspace_abs,
 
     if (!stream_command_stdout_lines(git_binary, args, workspace_abs,
                                      on_line, &stderr_text, &exit_code,
-                                     &killed_early, &err, output_limit)) {
+                                     &killed_early, nullptr, &err, output_limit)) {
         if (err.empty()) {
             err = trim_line_endings(stderr_text);
         }
@@ -1530,7 +1965,7 @@ nlohmann::json git_show(const std::string& workspace_abs,
 
     if (!stream_command_stdout_lines(git_binary, args, workspace_abs,
                                      on_line, &stderr_text, &exit_code,
-                                     &killed_early, &err, output_limit)) {
+                                     &killed_early, nullptr, &err, output_limit)) {
         if (err.empty()) {
             err = trim_line_endings(stderr_text);
         }
@@ -1571,6 +2006,234 @@ nlohmann::json git_show(const std::string& workspace_abs,
         {"stderr", trim_line_endings(stderr_text)},
         {"exit_code", exit_code},
         {"truncated", truncated},
+        {"error", ""}
+    };
+}
+
+nlohmann::json git_add(const std::string& workspace_abs,
+                       const std::vector<std::string>& pathspecs,
+                       size_t output_limit) {
+    if (pathspecs.empty()) {
+        return make_git_add_error_result(
+            "", "", -1, false, "Argument 'pathspecs' for git_add must contain at least one pathspec.");
+    }
+
+    const std::string git_binary = find_executable_in_path("git");
+    if (git_binary.empty()) {
+        return make_git_add_error_result(
+            "", "", -1, false, "git is not installed or not executable in this environment.");
+    }
+
+    std::vector<std::string> safe_paths;
+    safe_paths.reserve(pathspecs.size());
+    for (const auto& pathspec : pathspecs) {
+        std::string normalized_rel;
+        std::string validate_err;
+        if (!resolve_workspace_relative_git_path(workspace_abs, pathspec, &normalized_rel, &validate_err)) {
+            return make_git_add_error_result("", "", -1, false, std::move(validate_err));
+        }
+        safe_paths.push_back(std::move(normalized_rel));
+    }
+
+    std::vector<std::string> args = {git_binary, "add", "--"};
+    args.insert(args.end(), safe_paths.begin(), safe_paths.end());
+
+    GitTextCommandResult command = run_git_text_command(git_binary, args, workspace_abs, output_limit);
+    if (!command.launched) {
+        if (command.err.empty()) {
+            command.err = command.stderr_text;
+        }
+        return make_git_add_error_result(
+            "", command.stderr_text, command.exit_code, command.truncated,
+            command.err.empty() ? "git add failed." : command.err);
+    }
+
+    if (command.killed_early && command.truncated) {
+        return make_git_add_error_result(command.stdout_text,
+                                         command.stderr_text,
+                                         -1,
+                                         command.truncated,
+                                         "git add output exceeded the configured limit before the command completed.");
+    }
+
+    if (command.exit_code != 0) {
+        const std::string failure = normalize_git_repo_error(command.stderr_text);
+        return make_git_add_error_result(command.stdout_text,
+                                         command.stderr_text,
+                                         command.exit_code,
+                                         command.truncated,
+                                         failure.empty() ? "git add exited with code " + std::to_string(command.exit_code)
+                                                         : failure);
+    }
+
+    return {
+        {"ok", true},
+        {"stdout", command.stdout_text},
+        {"stderr", command.stderr_text},
+        {"exit_code", command.exit_code},
+        {"truncated", command.truncated},
+        {"error", ""}
+    };
+}
+
+nlohmann::json git_commit(const std::string& workspace_abs,
+                          const std::string& message,
+                          size_t output_limit) {
+    if (message.empty()) {
+        return make_git_commit_error_result(
+            "", "", -1, "", false, "Argument 'message' for git_commit must not be empty.");
+    }
+
+    const std::string git_binary = find_executable_in_path("git");
+    if (git_binary.empty()) {
+        return make_git_commit_error_result(
+            "", "", -1, "", false, "git is not installed or not executable in this environment.");
+    }
+
+    std::string repo_root;
+    std::string workspace_prefix;
+    std::string repo_err;
+    if (!get_repo_root_and_workspace_prefix(git_binary, workspace_abs, &repo_root, &workspace_prefix, &repo_err)) {
+        return make_git_commit_error_result(
+            "", "", -1, "", false, repo_err.empty() ? "Failed to resolve git repository root." : repo_err);
+    }
+
+    std::vector<std::string> staged_paths;
+    std::string staged_stderr;
+    int staged_exit_code = -1;
+    std::string staged_err;
+    if (!list_staged_paths(git_binary, workspace_abs, &staged_paths, &staged_stderr, &staged_exit_code, &staged_err)) {
+        return make_git_commit_error_result("",
+                                            trim_line_endings(staged_stderr),
+                                            staged_exit_code,
+                                            "",
+                                            false,
+                                            staged_err.empty() ? "Failed to inspect staged paths before git commit."
+                                                               : staged_err);
+    }
+    if (staged_exit_code != 0) {
+        const std::string failure = normalize_git_repo_error(staged_stderr);
+        return make_git_commit_error_result("",
+                                            trim_line_endings(staged_stderr),
+                                            staged_exit_code,
+                                            "",
+                                            false,
+                                            failure.empty() ? "Failed to inspect staged paths before git commit."
+                                                            : failure);
+    }
+    for (const auto& staged_path : staged_paths) {
+        if (!starts_with_path_component(staged_path, workspace_prefix)) {
+            return make_git_commit_error_result(
+                "", "", -1, "", false, "Refusing to commit staged path outside the workspace: " + staged_path);
+        }
+    }
+
+    GitCommitObservedState before_state;
+    std::string before_state_err;
+    if (!capture_git_commit_observed_state(git_binary,
+                                           workspace_abs,
+                                           "Failed to resolve HEAD before git commit.",
+                                           "Failed to inspect HEAD reflog before git commit.",
+                                           &before_state,
+                                           &before_state_err)) {
+        return make_git_commit_error_result("", "", -1, "", false, before_state_err);
+    }
+
+    std::vector<std::string> args = {git_binary};
+    if (!workspace_prefix.empty()) {
+        args.push_back("-c");
+        args.push_back("core.hooksPath=/dev/null");
+    }
+    args.insert(args.end(), {
+        "commit",
+        "-m", message
+    });
+
+    GitTextCommandResult command = run_git_text_command(git_binary, args, workspace_abs, output_limit);
+    if (!command.launched) {
+        if (command.err.empty()) {
+            command.err = command.stderr_text;
+        }
+        return make_git_commit_error_result(
+            "", command.stderr_text, command.exit_code, "", command.truncated,
+            command.err.empty() ? "git commit failed." : command.err);
+    }
+
+    GitCommitObservedState after_state;
+    std::string after_state_err;
+    if (!capture_git_commit_observed_state(git_binary,
+                                           workspace_abs,
+                                           "Failed to resolve HEAD after git commit.",
+                                           "Failed to inspect HEAD reflog after git commit.",
+                                           &after_state,
+                                           &after_state_err)) {
+        return make_git_commit_error_result(
+            command.stdout_text, command.stderr_text, -1, "", command.truncated, after_state_err);
+    }
+
+    std::string created_commit_sha;
+    std::string created_commit_err;
+    if (!resolve_created_commit_sha(git_binary,
+                                    workspace_abs,
+                                    before_state.head_sha,
+                                    after_state.head_sha,
+                                    before_state.reflog_shas,
+                                    after_state.reflog_shas,
+                                    &created_commit_sha,
+                                    &created_commit_err)) {
+        return make_git_commit_error_result(
+            command.stdout_text,
+            command.stderr_text,
+            -1,
+            "",
+            command.truncated,
+            created_commit_err.empty() ? "Failed to determine which commit git commit created." : created_commit_err);
+    }
+
+    const bool head_advanced = !created_commit_sha.empty();
+    if (command.killed_early && command.truncated) {
+        if (head_advanced) {
+            return {
+                {"ok", true},
+                {"stdout", command.stdout_text},
+                {"stderr", command.stderr_text},
+                {"exit_code", 0},
+                {"commit_sha", created_commit_sha},
+                {"truncated", command.truncated},
+                {"error", ""}
+            };
+        }
+        return make_git_commit_error_result(command.stdout_text,
+                                            command.stderr_text,
+                                            -1,
+                                            "",
+                                            command.truncated,
+                                            "git commit output exceeded the configured limit before the command completed.");
+    }
+
+    if (command.exit_code != 0) {
+        const std::string failure = normalize_git_commit_error(command.stdout_text, command.stderr_text);
+        return make_git_commit_error_result(command.stdout_text,
+                                            command.stderr_text,
+                                            command.exit_code,
+                                            "",
+                                            command.truncated,
+                                            failure.empty() ? "git commit exited with code " + std::to_string(command.exit_code)
+                                                            : failure);
+    }
+
+    if (!head_advanced) {
+        return make_git_commit_error_result(
+            command.stdout_text, command.stderr_text, -1, "", command.truncated, "git commit did not create a new HEAD commit.");
+    }
+
+    return {
+        {"ok", true},
+        {"stdout", command.stdout_text},
+        {"stderr", command.stderr_text},
+        {"exit_code", command.exit_code},
+        {"commit_sha", created_commit_sha},
+        {"truncated", command.truncated},
         {"error", ""}
     };
 }

@@ -403,6 +403,567 @@ TEST_F(RepoToolsTest, GitStatusExecutorEnforcesOutputLimit) {
     EXPECT_EQ(result["returned"].get<size_t>(), result["entries"].size());
 }
 
+TEST_F(RepoToolsTest, GitAddRejectsEmptyPathspecs) {
+    const auto result = git_add(test_workspace, {});
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_EQ(result["exit_code"].get<int>(), -1);
+    EXPECT_NE(result["error"].get<std::string>().find("pathspec"), std::string::npos);
+}
+
+TEST_F(RepoToolsTest, GitAddRejectsEmptyPathStringElements) {
+    const auto result = git_add(test_workspace, {""});
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_EQ(result["exit_code"].get<int>(), -1);
+    EXPECT_EQ(result["error"].get<std::string>(),
+              "Argument 'pathspecs' for git_add must not contain empty path strings.");
+}
+
+TEST_F(RepoToolsTest, GitAddFailsGracefullyOutsideGitRepo) {
+    const auto result = git_add(test_workspace, {"tracked.txt"});
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_NE(result["error"].get<std::string>().find("git repository"), std::string::npos);
+}
+
+TEST_F(RepoToolsTest, GitAddStagesOnlyRequestedPathspecs) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T"), 0);
+    create_file("only.txt", "only\n");
+    create_file("other.txt", "other\n");
+
+    const auto add_result = git_add(test_workspace, {"only.txt"});
+    ASSERT_TRUE(add_result["ok"].get<bool>()) << add_result.dump();
+
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && ! git diff --cached --quiet -- only.txt"), 0);
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git diff --cached --quiet -- other.txt"), 0);
+}
+
+TEST_F(RepoToolsTest, GitAddHandlesDashPrefixedFilename) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T"), 0);
+    create_file("-dash.txt", "dash\n");
+
+    const auto result = git_add(test_workspace, {"-dash.txt"});
+    ASSERT_TRUE(result["ok"].get<bool>()) << result.dump();
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && ! git diff --cached --quiet -- -- '-dash.txt'"), 0);
+}
+
+TEST_F(RepoToolsTest, GitAddRejectsParentEscapePathspec) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1"), 0);
+    fs::create_directories(fs::path(test_workspace) / "subdir");
+    create_file("root.txt", "root\n");
+
+    const auto result = git_add((fs::path(test_workspace) / "subdir").string(), {"../root.txt"});
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_NE(result["error"].get<std::string>().find("workspace"), std::string::npos);
+}
+
+TEST_F(RepoToolsTest, GitAddRejectsAbsolutePath) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1"), 0);
+    create_file("tracked.txt", "tracked\n");
+
+    const auto result = git_add(test_workspace, {(fs::path(test_workspace) / "tracked.txt").string()});
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_NE(result["error"].get<std::string>().find("workspace"), std::string::npos);
+}
+
+TEST_F(RepoToolsTest, GitAddRejectsPathspecMagic) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1"), 0);
+    create_file("tracked.txt", "tracked\n");
+
+    const auto result = git_add(test_workspace, {":(top)tracked.txt"});
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_NE(result["error"].get<std::string>().find("pathspec magic"), std::string::npos);
+}
+
+TEST_F(RepoToolsTest, GitAddRejectsRepoRootPathspecMagic) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1"), 0);
+    fs::create_directories(fs::path(test_workspace) / "subdir");
+    create_file("outside.txt", "outside\n");
+
+    const auto result = git_add((fs::path(test_workspace) / "subdir").string(), {":/outside.txt"});
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_NE(result["error"].get<std::string>().find("pathspec magic"), std::string::npos);
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git diff --cached --quiet -- outside.txt"), 0);
+}
+
+TEST_F(RepoToolsTest, GitAddRejectsShortFormPathspecMagic) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1"), 0);
+    create_file("inside.txt", "inside\n");
+
+    const auto result = git_add(test_workspace, {":!inside.txt"});
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_NE(result["error"].get<std::string>().find("pathspec magic"), std::string::npos);
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git diff --cached --quiet -- inside.txt"), 0);
+}
+
+TEST_F(RepoToolsTest, GitAddRejectsBareColonPathspecMagic) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1"), 0);
+    create_file("inside.txt", "inside\n");
+
+    const auto result = git_add(test_workspace, {":"});
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_NE(result["error"].get<std::string>().find("pathspec magic"), std::string::npos);
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git diff --cached --quiet -- inside.txt"), 0);
+}
+
+TEST_F(RepoToolsTest, GitCommitRejectsEmptyMessage) {
+    const auto result = git_commit(test_workspace, "");
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_EQ(result["exit_code"].get<int>(), -1);
+    EXPECT_NE(result["error"].get<std::string>().find("message"), std::string::npos);
+}
+
+TEST_F(RepoToolsTest, GitCommitFailsGracefullyOutsideGitRepo) {
+    const auto result = git_commit(test_workspace, "msg");
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_NE(result["error"].get<std::string>().find("git repository"), std::string::npos);
+}
+
+TEST_F(RepoToolsTest, GitCommitWithoutStagedChangesReturnsReadableError) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T &&"
+                       " printf 'base\\n' > tracked.txt &&"
+                       " git add tracked.txt >/dev/null 2>&1 &&"
+                       " git commit -m init >/dev/null 2>&1"), 0);
+    create_file("tracked.txt", "changed but unstaged\n");
+
+    const auto result = git_commit(test_workspace, "second");
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_NE(result["error"].get<std::string>().find("staged"), std::string::npos);
+    EXPECT_TRUE(!result["stdout"].get<std::string>().empty() ||
+                !result["stderr"].get<std::string>().empty());
+}
+
+TEST_F(RepoToolsTest, GitCommitCreatesCommitFromStagedIndex) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T &&"
+                       " printf 'base\\n' > staged.txt &&"
+                       " printf 'keep\\n' > unstaged.txt &&"
+                       " git add staged.txt unstaged.txt >/dev/null 2>&1 &&"
+                       " git commit -m init >/dev/null 2>&1"), 0);
+
+    create_file("staged.txt", "staged change\n");
+    create_file("unstaged.txt", "worktree only\n");
+    ASSERT_TRUE(git_add(test_workspace, {"staged.txt"})["ok"].get<bool>());
+
+    const auto result = git_commit(test_workspace, "second");
+    ASSERT_TRUE(result["ok"].get<bool>()) << result.dump();
+
+    ASSERT_EQ(run_bash("cd '" + test_workspace +
+                       "' && test \"$(git show HEAD:staged.txt)\" = \"staged change\""), 0);
+    ASSERT_EQ(run_bash("cd '" + test_workspace +
+                       "' && test \"$(git show HEAD:unstaged.txt)\" = \"keep\""), 0);
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && ! git diff --quiet -- unstaged.txt"), 0);
+}
+
+TEST_F(RepoToolsTest, GitCommitReturnsCommitSha) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T"), 0);
+    create_file("tracked.txt", "hello\n");
+    ASSERT_TRUE(git_add(test_workspace, {"tracked.txt"})["ok"].get<bool>());
+
+    const auto result = git_commit(test_workspace, "init");
+    ASSERT_TRUE(result["ok"].get<bool>()) << result.dump();
+    ASSERT_TRUE(result.contains("commit_sha"));
+    const std::string sha = result["commit_sha"].get<std::string>();
+    EXPECT_FALSE(sha.empty());
+
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git rev-parse HEAD > head.txt"), 0);
+    std::ifstream in(fs::path(test_workspace) / "head.txt");
+    std::string head;
+    std::getline(in, head);
+    EXPECT_EQ(sha, head);
+}
+
+TEST_F(RepoToolsTest, GitCommitPreservesExplicitHashPrefixedMessageLines) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T"), 0);
+    create_file("tracked.txt", "hello\n");
+    ASSERT_TRUE(git_add(test_workspace, {"tracked.txt"})["ok"].get<bool>());
+    ASSERT_TRUE(git_commit(test_workspace, "init")["ok"].get<bool>());
+
+    create_file("tracked.txt", "next\n");
+    ASSERT_TRUE(git_add(test_workspace, {"tracked.txt"})["ok"].get<bool>());
+
+    const std::string message = "subject\n#kept\nbody";
+    const auto result = git_commit(test_workspace, message);
+    ASSERT_TRUE(result["ok"].get<bool>()) << result.dump();
+
+    ASSERT_EQ(run_bash("cd '" + test_workspace +
+                       "' && git log -1 --format=%B > actual_message.txt &&"
+                       " grep -Fx 'subject' actual_message.txt >/dev/null &&"
+                       " grep -Fx '#kept' actual_message.txt >/dev/null &&"
+                       " grep -Fx 'body' actual_message.txt >/dev/null"), 0);
+}
+
+TEST_F(RepoToolsTest, GitCommitRejectsStagedPathsOutsideWorkspace) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T"), 0);
+    fs::create_directories(fs::path(test_workspace) / "subdir");
+    create_file("subdir/inside.txt", "inside\n");
+    create_file("outside.txt", "outside\n");
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git add subdir/inside.txt outside.txt >/dev/null 2>&1"), 0);
+    ASSERT_NE(run_bash("cd '" + test_workspace + "' && git rev-parse HEAD >/dev/null 2>&1"), 0);
+
+    const auto result = git_commit((fs::path(test_workspace) / "subdir").string(), "blocked");
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_NE(result["error"].get<std::string>().find("outside the workspace"), std::string::npos);
+    ASSERT_NE(run_bash("cd '" + test_workspace + "' && git rev-parse HEAD >/dev/null 2>&1"), 0);
+}
+
+TEST_F(RepoToolsTest, GitCommitSucceedsWhenAllStagedPathsStayInsideWorkspace) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T"), 0);
+    fs::create_directories(fs::path(test_workspace) / "subdir");
+    create_file("subdir/inside.txt", "inside\n");
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git add subdir/inside.txt >/dev/null 2>&1"), 0);
+
+    const auto result = git_commit((fs::path(test_workspace) / "subdir").string(), "inside only");
+    ASSERT_TRUE(result["ok"].get<bool>()) << result.dump();
+    ASSERT_EQ(run_bash("cd '" + test_workspace +
+                       "' && test \"$(git show HEAD:subdir/inside.txt)\" = \"inside\""), 0);
+}
+
+TEST_F(RepoToolsTest, GitCommitInRepoRootStillWorks) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T"), 0);
+    create_file("tracked.txt", "hello\n");
+    ASSERT_TRUE(git_add(test_workspace, {"tracked.txt"})["ok"].get<bool>());
+
+    const auto result = git_commit(test_workspace, "root commit");
+    ASSERT_TRUE(result["ok"].get<bool>()) << result.dump();
+}
+
+TEST_F(RepoToolsTest, GitCommitRejectsCrossBoundaryRenameIntoWorkspace) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T"), 0);
+    fs::create_directories(fs::path(test_workspace) / "subdir");
+    create_file("outside.txt", "outside\n");
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git add outside.txt >/dev/null 2>&1 &&"
+                       " git commit -m init >/dev/null 2>&1 &&"
+                       " git mv outside.txt subdir/inside.txt"), 0);
+
+    const auto before = git_show(test_workspace, "HEAD", false, false, {}, 3);
+    ASSERT_TRUE(before["ok"].get<bool>()) << before.dump();
+
+    const auto result = git_commit((fs::path(test_workspace) / "subdir").string(), "rename blocked");
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_NE(result["error"].get<std::string>().find("outside the workspace"), std::string::npos);
+
+    const auto after = git_show(test_workspace, "HEAD", false, false, {}, 3);
+    ASSERT_TRUE(after["ok"].get<bool>()) << after.dump();
+    EXPECT_EQ(before["stdout"], after["stdout"]);
+}
+
+TEST_F(RepoToolsTest, GitCommitRejectsCrossBoundaryRenameOutOfWorkspace) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T"), 0);
+    fs::create_directories(fs::path(test_workspace) / "subdir");
+    create_file("subdir/inside.txt", "inside\n");
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git add subdir/inside.txt >/dev/null 2>&1 &&"
+                       " git commit -m init >/dev/null 2>&1 &&"
+                       " git mv subdir/inside.txt outside.txt"), 0);
+
+    const auto before = git_show(test_workspace, "HEAD", false, false, {}, 3);
+    ASSERT_TRUE(before["ok"].get<bool>()) << before.dump();
+
+    const auto result = git_commit((fs::path(test_workspace) / "subdir").string(), "rename blocked");
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_NE(result["error"].get<std::string>().find("outside the workspace"), std::string::npos);
+
+    const auto after = git_show(test_workspace, "HEAD", false, false, {}, 3);
+    ASSERT_TRUE(after["ok"].get<bool>()) << after.dump();
+    EXPECT_EQ(before["stdout"], after["stdout"]);
+}
+
+TEST_F(RepoToolsTest, GitAddFailurePropagatesTruncatedFlag) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1"), 0);
+    const fs::path filter_script = fs::path(test_workspace) / "broken-clean.sh";
+    {
+        std::ofstream out(filter_script);
+        out << "#!/bin/sh\n";
+        out << "i=0\n";
+        out << "while [ $i -lt 2000 ]; do printf 'clean-filter-line-%03d\\n' \"$i\" 1>&2; i=$((i+1)); done\n";
+        out << "exit 1\n";
+    }
+    fs::permissions(filter_script,
+                    fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write |
+                    fs::perms::group_exec | fs::perms::group_read |
+                    fs::perms::others_exec | fs::perms::others_read);
+    create_file(".gitattributes", "*.txt filter=broken\n");
+    create_file("tracked.txt", "hello\n");
+    ASSERT_EQ(run_bash("cd '" + test_workspace +
+                       "' && git config filter.broken.clean '" + filter_script.string() + "' &&"
+                       " git config filter.broken.required true"), 0);
+
+    const auto result = git_add(test_workspace, {"tracked.txt"}, 40);
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_TRUE(result["truncated"].get<bool>()) << result.dump();
+}
+
+TEST_F(RepoToolsTest, GitAddKilledEarlyByOutputLimitIsReportedAsFailure) {
+    const fs::path custom_bin = fs::path(test_workspace) / "custom-bin";
+    fs::create_directories(custom_bin);
+    const fs::path fake_git = custom_bin / "git";
+    {
+        std::ofstream out(fake_git);
+        out << "#!/bin/sh\n";
+        out << "i=0\n";
+        out << "while [ $i -lt 200000 ]; do printf 'fake-git-add-line-%06d\\n' \"$i\"; i=$((i+1)); done\n";
+        out << "exit 0\n";
+    }
+    fs::permissions(fake_git,
+                    fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write |
+                    fs::perms::group_exec | fs::perms::group_read |
+                    fs::perms::others_exec | fs::perms::others_read);
+    const char* old_path_cstr = std::getenv("PATH");
+    const std::string old_path = old_path_cstr ? old_path_cstr : "";
+    ScopedEnvVar scoped_path("PATH", custom_bin.string() + ":" + old_path);
+
+    const auto result = git_add(test_workspace, {"tracked.txt"}, 40);
+    EXPECT_FALSE(result["ok"].get<bool>()) << result.dump();
+    EXPECT_TRUE(result["truncated"].get<bool>()) << result.dump();
+    EXPECT_EQ(result["error"].get<std::string>(),
+              "git add output exceeded the configured limit before the command completed.");
+}
+
+TEST_F(RepoToolsTest, GitCommitFailurePropagatesTruncatedFlag) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T &&"
+                       " printf 'hello\\n' > tracked.txt &&"
+                       " git add tracked.txt >/dev/null 2>&1"), 0);
+    const fs::path hook_dir = fs::path(test_workspace) / ".git" / "hooks";
+    const fs::path hook = hook_dir / "commit-msg";
+    {
+        std::ofstream out(hook);
+        out << "#!/bin/sh\n";
+        out << "i=0\n";
+        out << "while [ $i -lt 2000 ]; do printf 'hook-output-line-%03d\\n' \"$i\"; i=$((i+1)); done\n";
+        out << "exit 1\n";
+    }
+    fs::permissions(hook,
+                    fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write |
+                    fs::perms::group_exec | fs::perms::group_read |
+                    fs::perms::others_exec | fs::perms::others_read);
+
+    const auto result = git_commit(test_workspace, "hook fail", 40);
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_TRUE(result["truncated"].get<bool>()) << result.dump();
+}
+
+TEST_F(RepoToolsTest, GitCommitKilledEarlyByOutputLimitIsReportedAsFailure) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T &&"
+                       " printf 'base\\n' > tracked.txt &&"
+                       " git add tracked.txt >/dev/null 2>&1 &&"
+                       " git commit -m init >/dev/null 2>&1"), 0);
+    create_file("tracked.txt", "changed\n");
+    ASSERT_TRUE(git_add(test_workspace, {"tracked.txt"})["ok"].get<bool>());
+
+    const fs::path hook = fs::path(test_workspace) / ".git" / "hooks" / "pre-commit";
+    {
+        std::ofstream out(hook);
+        out << "#!/bin/sh\n";
+        out << "i=0\n";
+        out << "while [ $i -lt 200000 ]; do printf 'hook-output-line-%06d\\n' \"$i\"; i=$((i+1)); done\n";
+        out << "exit 1\n";
+    }
+    fs::permissions(hook,
+                    fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write |
+                    fs::perms::group_exec | fs::perms::group_read |
+                    fs::perms::others_exec | fs::perms::others_read);
+
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git rev-parse HEAD > before_head.txt"), 0);
+    const auto result = git_commit(test_workspace, "killed", 40);
+    EXPECT_FALSE(result["ok"].get<bool>()) << result.dump();
+    EXPECT_TRUE(result["truncated"].get<bool>()) << result.dump();
+    EXPECT_TRUE(result["commit_sha"].get<std::string>().empty()) << result.dump();
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git rev-parse HEAD > after_head.txt"), 0);
+    std::ifstream before_in(fs::path(test_workspace) / "before_head.txt");
+    std::ifstream after_in(fs::path(test_workspace) / "after_head.txt");
+    std::string before_head;
+    std::string after_head;
+    std::getline(before_in, before_head);
+    std::getline(after_in, after_head);
+    EXPECT_EQ(after_head, before_head) << result.dump();
+}
+
+TEST_F(RepoToolsTest, GitCommitDoesNotReturnOldHeadWhenCommandWasKilledEarly) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T &&"
+                       " printf 'base\\n' > tracked.txt &&"
+                       " git add tracked.txt >/dev/null 2>&1 &&"
+                       " git commit -m init >/dev/null 2>&1 &&"
+                       " git rev-parse HEAD > before_head.txt"), 0);
+    create_file("tracked.txt", "changed\n");
+    ASSERT_TRUE(git_add(test_workspace, {"tracked.txt"})["ok"].get<bool>());
+
+    const fs::path hook = fs::path(test_workspace) / ".git" / "hooks" / "pre-commit";
+    {
+        std::ofstream out(hook);
+        out << "#!/bin/sh\n";
+        out << "i=0\n";
+        out << "while [ $i -lt 200000 ]; do printf 'hook-output-line-%06d\\n' \"$i\"; i=$((i+1)); done\n";
+        out << "exit 0\n";
+    }
+    fs::permissions(hook,
+                    fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write |
+                    fs::perms::group_exec | fs::perms::group_read |
+                    fs::perms::others_exec | fs::perms::others_read);
+
+    const auto result = git_commit(test_workspace, "killed", 40);
+    EXPECT_TRUE(result["truncated"].get<bool>()) << result.dump();
+    std::ifstream before_in(fs::path(test_workspace) / "before_head.txt");
+    std::string before_head;
+    std::getline(before_in, before_head);
+    EXPECT_NE(result["commit_sha"].get<std::string>(), before_head) << result.dump();
+}
+
+TEST_F(RepoToolsTest, GitCommitStderrOnlyFailureDoesNotPrefixErrorWithNewline) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T &&"
+                       " printf 'hello\\n' > tracked.txt &&"
+                       " git add tracked.txt >/dev/null 2>&1"), 0);
+    const fs::path hook = fs::path(test_workspace) / ".git" / "hooks" / "commit-msg";
+    {
+        std::ofstream out(hook);
+        out << "#!/bin/sh\n";
+        out << "printf 'stderr-only-hook-failure\\n' 1>&2\n";
+        out << "exit 1\n";
+    }
+    fs::permissions(hook,
+                    fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write |
+                    fs::perms::group_exec | fs::perms::group_read |
+                    fs::perms::others_exec | fs::perms::others_read);
+
+    const auto result = git_commit(test_workspace, "stderr only");
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_EQ(result["error"].get<std::string>(), "stderr-only-hook-failure");
+}
+
+TEST_F(RepoToolsTest, GitCommitIgnoresHooksWhenEnforcingWorkspaceOnlyCommits) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T"), 0);
+    fs::create_directories(fs::path(test_workspace) / "subdir");
+    create_file("subdir/inside.txt", "inside\n");
+    create_file("outside.txt", "outside\n");
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git add subdir/inside.txt >/dev/null 2>&1"), 0);
+
+    const fs::path hook = fs::path(test_workspace) / ".git" / "hooks" / "pre-commit";
+    {
+        std::ofstream out(hook);
+        out << "#!/bin/sh\n";
+        out << "printf 'mutated by hook\\n' > outside.txt\n";
+        out << "git add outside.txt\n";
+        out << "exit 0\n";
+    }
+    fs::permissions(hook,
+                    fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write |
+                    fs::perms::group_exec | fs::perms::group_read |
+                    fs::perms::others_exec | fs::perms::others_read);
+
+    const auto result = git_commit((fs::path(test_workspace) / "subdir").string(), "inside only");
+    ASSERT_TRUE(result["ok"].get<bool>()) << result.dump();
+    ASSERT_EQ(run_bash("cd '" + test_workspace +
+                       "' && test \"$(git show HEAD:subdir/inside.txt)\" = \"inside\""), 0);
+    ASSERT_NE(run_bash("cd '" + test_workspace + "' && git show HEAD:outside.txt >/dev/null 2>&1"), 0);
+}
+
+TEST_F(RepoToolsTest, GitCommitRespectsRepositorySigningPolicy) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T &&"
+                       " git config commit.gpgSign true &&"
+                       " git config gpg.program /definitely/missing/gpg"), 0);
+    create_file("tracked.txt", "hello\n");
+    ASSERT_TRUE(git_add(test_workspace, {"tracked.txt"})["ok"].get<bool>());
+
+    const auto result = git_commit(test_workspace, "signed commit");
+    EXPECT_FALSE(result["ok"].get<bool>()) << result.dump();
+    EXPECT_TRUE(result["commit_sha"].get<std::string>().empty()) << result.dump();
+    EXPECT_NE(result["error"].get<std::string>().find("gpg"), std::string::npos) << result.dump();
+    ASSERT_NE(run_bash("cd '" + test_workspace + "' && git rev-parse HEAD >/dev/null 2>&1"), 0);
+}
+
+TEST_F(RepoToolsTest, GitCommitKilledEarlyAfterHeadAdvanceReturnsSuccess) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T &&"
+                       " printf 'base\\n' > tracked.txt &&"
+                       " git add tracked.txt >/dev/null 2>&1 &&"
+                       " git commit -m init >/dev/null 2>&1 &&"
+                       " git rev-parse HEAD > before_head.txt"), 0);
+    create_file("tracked.txt", "changed\n");
+    ASSERT_TRUE(git_add(test_workspace, {"tracked.txt"})["ok"].get<bool>());
+
+    const fs::path hook = fs::path(test_workspace) / ".git" / "hooks" / "post-commit";
+    {
+        std::ofstream out(hook);
+        out << "#!/bin/sh\n";
+        out << "i=0\n";
+        out << "while [ $i -lt 200000 ]; do printf 'post-commit-line-%06d\\n' \"$i\"; i=$((i+1)); done\n";
+        out << "exit 0\n";
+    }
+    fs::permissions(hook,
+                    fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write |
+                    fs::perms::group_exec | fs::perms::group_read |
+                    fs::perms::others_exec | fs::perms::others_read);
+
+    const auto result = git_commit(test_workspace, "post noisy", 40);
+    ASSERT_TRUE(result["ok"].get<bool>()) << result.dump();
+    EXPECT_TRUE(result["truncated"].get<bool>()) << result.dump();
+    EXPECT_FALSE(result["commit_sha"].get<std::string>().empty()) << result.dump();
+
+    std::ifstream before_in(fs::path(test_workspace) / "before_head.txt");
+    std::string before_head;
+    std::getline(before_in, before_head);
+    EXPECT_NE(result["commit_sha"].get<std::string>(), before_head) << result.dump();
+}
+
+TEST_F(RepoToolsTest, GitCommitReturnsCreatedCommitWhenPostCommitHookAdvancesHead) {
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T &&"
+                       " printf 'base\\n' > tracked.txt &&"
+                       " git add tracked.txt >/dev/null 2>&1 &&"
+                       " git commit -m init >/dev/null 2>&1"), 0);
+    create_file("tracked.txt", "changed\n");
+    ASSERT_TRUE(git_add(test_workspace, {"tracked.txt"})["ok"].get<bool>());
+
+    const fs::path hook = fs::path(test_workspace) / ".git" / "hooks" / "post-commit";
+    {
+        std::ofstream out(hook);
+        out << "#!/bin/sh\n";
+        out << "if [ \"${NANO_EXTRA_POST_COMMIT:-}\" = \"1\" ]; then\n";
+        out << "  exit 0\n";
+        out << "fi\n";
+        out << "export NANO_EXTRA_POST_COMMIT=1\n";
+        out << "printf 'from-hook\\n' > hook.txt\n";
+        out << "git add hook.txt >/dev/null 2>&1 || exit 1\n";
+        out << "git commit -m hook-generated >/dev/null 2>&1 || exit 1\n";
+        out << "exit 0\n";
+    }
+    fs::permissions(hook,
+                    fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write |
+                        fs::perms::group_exec | fs::perms::group_read |
+                        fs::perms::others_exec | fs::perms::others_read);
+
+    const auto result = git_commit(test_workspace, "main commit");
+    ASSERT_TRUE(result["ok"].get<bool>()) << result.dump();
+    const std::string commit_sha = result["commit_sha"].get<std::string>();
+    ASSERT_FALSE(commit_sha.empty()) << result.dump();
+
+    std::ifstream head_in(fs::path(test_workspace) / ".git" / "HEAD");
+    (void)head_in;
+    const std::string final_head_cmd = "cd '" + test_workspace + "' && git rev-parse HEAD > final_head.txt";
+    ASSERT_EQ(run_bash(final_head_cmd), 0);
+    std::ifstream final_head_in(fs::path(test_workspace) / "final_head.txt");
+    std::string final_head;
+    std::getline(final_head_in, final_head);
+    EXPECT_NE(commit_sha, final_head) << result.dump();
+
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && test \"$(git show " + commit_sha + ":tracked.txt)\" = \"changed\""), 0);
+    ASSERT_NE(run_bash("cd '" + test_workspace + "' && git show " + commit_sha + ":hook.txt >/dev/null 2>&1"), 0);
+    ASSERT_EQ(run_bash("cd '" + test_workspace + "' && test \"$(git show HEAD:hook.txt)\" = \"from-hook\""), 0);
+}
+
 // ---------------------------------------------------------------------------
 // GitDiffTest: git_diff tool
 // ---------------------------------------------------------------------------

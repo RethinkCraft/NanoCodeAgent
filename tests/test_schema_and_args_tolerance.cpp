@@ -34,7 +34,7 @@ int run_bash(const std::string& command) {
 
 TEST(SchemaAndArgsToleranceTest, GetSchemaMatchesCurrentTools) {
     json schema = get_agent_tools_schema();
-    EXPECT_EQ(schema.size(), 11u);
+    EXPECT_EQ(schema.size(), 13u);
 
     bool has_read        = false;
     bool has_write       = false;
@@ -47,6 +47,8 @@ TEST(SchemaAndArgsToleranceTest, GetSchemaMatchesCurrentTools) {
     bool has_apply_patch = false;
     bool has_git_diff    = false;
     bool has_git_show    = false;
+    bool has_git_add     = false;
+    bool has_git_commit  = false;
     for (const auto& tool : schema) {
         std::string name = tool["function"]["name"];
         if (name == "read_file_safe")   has_read        = true;
@@ -60,6 +62,8 @@ TEST(SchemaAndArgsToleranceTest, GetSchemaMatchesCurrentTools) {
         if (name == "apply_patch")      has_apply_patch = true;
         if (name == "git_diff")         has_git_diff    = true;
         if (name == "git_show")         has_git_show    = true;
+        if (name == "git_add")          has_git_add     = true;
+        if (name == "git_commit")       has_git_commit  = true;
     }
     EXPECT_TRUE(has_read);
     EXPECT_TRUE(has_write);
@@ -72,11 +76,14 @@ TEST(SchemaAndArgsToleranceTest, GetSchemaMatchesCurrentTools) {
     EXPECT_TRUE(has_apply_patch);
     EXPECT_TRUE(has_git_diff);
     EXPECT_TRUE(has_git_show);
+    EXPECT_TRUE(has_git_add);
+    EXPECT_TRUE(has_git_commit);
 }
 
 TEST(SchemaAndArgsToleranceTest, BashTimeoutRejectsOutOfRangeInteger) {
     AgentConfig config;
     config.workspace_abs = ".";
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
 
     ToolCall tc;
@@ -94,6 +101,7 @@ TEST(SchemaAndArgsToleranceTest, BashTimeoutRejectsOutOfRangeInteger) {
 TEST(SchemaAndArgsToleranceTest, BashTimeoutRejectsOutOfRangeString) {
     AgentConfig config;
     config.workspace_abs = ".";
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
 
     ToolCall tc;
@@ -111,6 +119,7 @@ TEST(SchemaAndArgsToleranceTest, BashTimeoutRejectsOutOfRangeString) {
 TEST(SchemaAndArgsToleranceTest, BashTimeoutToleratesStrings) {
     AgentConfig config;
     config.workspace_abs = "."; // Allow mock safe dir
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
     
     ToolCall tc;
@@ -130,6 +139,7 @@ TEST(SchemaAndArgsToleranceTest, BashTimeoutToleratesStrings) {
 TEST(SchemaAndArgsToleranceTest, BashTimeoutRejectsUnsignedOverflow) {
     AgentConfig config;
     config.workspace_abs = ".";
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
 
     ToolCall tc;
@@ -146,6 +156,7 @@ TEST(SchemaAndArgsToleranceTest, BashTimeoutRejectsUnsignedOverflow) {
 TEST(SchemaAndArgsToleranceTest, BashTimeoutRejectsStringOverflow) {
     AgentConfig config;
     config.workspace_abs = ".";
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
 
     ToolCall tc;
@@ -295,6 +306,116 @@ TEST(SchemaAndArgsToleranceTest, BashExecuteSafeBlockedWithoutApprovalHasNoSideE
     std::filesystem::remove_all(test_workspace);
 }
 
+TEST(SchemaAndArgsToleranceTest, BashExecuteSafeRequiresMutatingApprovalEvenIfExecutionAllowed) {
+    const auto test_workspace =
+        (std::filesystem::temp_directory_path() /
+         ("nano_bash_mutating_req_" + std::to_string(getpid())))
+            .string();
+    std::filesystem::remove_all(test_workspace);
+    std::filesystem::create_directories(test_workspace);
+
+    AgentConfig config;
+    config.workspace_abs = test_workspace;
+    config.allow_execution_tools = true;
+
+    ToolCall bash_call;
+    bash_call.name = "bash_execute_safe";
+    bash_call.arguments = {
+        {"command", "printf 'hi' > blocked.txt"}
+    };
+
+    const json result = json::parse(execute_tool(bash_call, config));
+    EXPECT_FALSE(result["ok"].get<bool>()) << result.dump();
+    EXPECT_EQ(result["status"], "blocked");
+    EXPECT_EQ(result["category"], "execution");
+    EXPECT_TRUE(result["requires_mutating_approval"].get<bool>());
+    EXPECT_TRUE(result["requires_execution_approval"].get<bool>());
+    EXPECT_EQ(result["missing_approvals"], json::array({"mutating"}));
+    EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(test_workspace) / "blocked.txt"));
+
+    std::filesystem::remove_all(test_workspace);
+}
+
+TEST(SchemaAndArgsToleranceTest, BuildProjectSafeRequiresMutatingApprovalEvenIfExecutionAllowed) {
+    const auto ws =
+        (std::filesystem::temp_directory_path() /
+         ("nano_build_mutating_req_" + std::to_string(getpid())))
+            .string();
+    std::filesystem::remove_all(ws);
+    std::filesystem::create_directories(ws);
+
+    {
+        std::ofstream out(std::filesystem::path(ws) / "build.sh");
+        out << "#!/bin/sh\n";
+        out << "printf 'build blocked\\n' > build-side-effect.txt\n";
+        out << "exit 0\n";
+    }
+    std::filesystem::permissions(std::filesystem::path(ws) / "build.sh",
+                                 std::filesystem::perms::owner_exec | std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write | std::filesystem::perms::group_exec |
+                                     std::filesystem::perms::group_read | std::filesystem::perms::others_exec |
+                                     std::filesystem::perms::others_read);
+
+    AgentConfig config;
+    config.workspace_abs = ws;
+    config.allow_execution_tools = true;
+
+    ToolCall tc;
+    tc.name = "build_project_safe";
+    tc.arguments = json::object();
+
+    const json result = json::parse(execute_tool(tc, config));
+    EXPECT_FALSE(result["ok"].get<bool>()) << result.dump();
+    EXPECT_EQ(result["status"], "blocked");
+    EXPECT_EQ(result["category"], "execution");
+    EXPECT_TRUE(result["requires_mutating_approval"].get<bool>());
+    EXPECT_TRUE(result["requires_execution_approval"].get<bool>());
+    EXPECT_EQ(result["missing_approvals"], json::array({"mutating"}));
+    EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(ws) / "build-side-effect.txt"));
+
+    std::filesystem::remove_all(ws);
+}
+
+TEST(SchemaAndArgsToleranceTest, TestProjectSafeRequiresMutatingApprovalEvenIfExecutionAllowed) {
+    const auto ws =
+        (std::filesystem::temp_directory_path() /
+         ("nano_test_mutating_req_" + std::to_string(getpid())))
+            .string();
+    std::filesystem::remove_all(ws);
+    std::filesystem::create_directories(ws);
+
+    {
+        std::ofstream out(std::filesystem::path(ws) / "build.sh");
+        out << "#!/bin/sh\n";
+        out << "printf 'test blocked\\n' > test-side-effect.txt\n";
+        out << "exit 0\n";
+    }
+    std::filesystem::permissions(std::filesystem::path(ws) / "build.sh",
+                                 std::filesystem::perms::owner_exec | std::filesystem::perms::owner_read |
+                                     std::filesystem::perms::owner_write | std::filesystem::perms::group_exec |
+                                     std::filesystem::perms::group_read | std::filesystem::perms::others_exec |
+                                     std::filesystem::perms::others_read);
+
+    AgentConfig config;
+    config.workspace_abs = ws;
+    config.allow_execution_tools = true;
+
+    ToolCall tc;
+    tc.name = "test_project_safe";
+    tc.arguments = json::object();
+
+    const json result = json::parse(execute_tool(tc, config));
+    EXPECT_FALSE(result["ok"].get<bool>()) << result.dump();
+    EXPECT_EQ(result["status"], "blocked");
+    EXPECT_EQ(result["category"], "execution");
+    EXPECT_TRUE(result["requires_mutating_approval"].get<bool>());
+    EXPECT_TRUE(result["requires_execution_approval"].get<bool>());
+    EXPECT_EQ(result["missing_approvals"], json::array({"mutating"}));
+    EXPECT_FALSE(std::filesystem::exists(std::filesystem::path(ws) / "test-side-effect.txt"));
+
+    std::filesystem::remove_all(ws);
+}
+
 TEST(SchemaAndArgsToleranceTest, WriteFileSafeBlockedWithoutMutatingApprovalHasNoSideEffects) {
     const auto test_workspace =
         (std::filesystem::temp_directory_path() /
@@ -357,6 +478,204 @@ TEST(SchemaAndArgsToleranceTest, ApplyPatchBlockedWithoutMutatingApprovalHasNoSi
     std::filesystem::remove_all(test_workspace);
 }
 
+TEST(SchemaAndArgsToleranceTest, GitAddBlockedWithoutMutatingApprovalHasNoSideEffects) {
+    const auto ws =
+        (std::filesystem::temp_directory_path() /
+         ("nano_git_add_blocked_" + std::to_string(getpid())))
+            .string();
+    std::filesystem::remove_all(ws);
+    std::filesystem::create_directories(ws);
+
+    ASSERT_EQ(run_bash("cd '" + ws + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T"), 0);
+    {
+        std::ofstream out(std::filesystem::path(ws) / "blocked.txt");
+        out << "blocked\n";
+    }
+
+    AgentConfig config;
+    config.workspace_abs = ws;
+    config.allow_execution_tools = true;
+
+    ToolCall tc;
+    tc.name = "git_add";
+    tc.arguments = {{"pathspecs", json::array({"blocked.txt"})}};
+
+    const json result = json::parse(execute_tool(tc, config));
+    EXPECT_FALSE(result["ok"].get<bool>()) << result.dump();
+    EXPECT_EQ(result["status"], "blocked");
+    EXPECT_EQ(result["category"], "mutating");
+    EXPECT_TRUE(result["requires_mutating_approval"].get<bool>());
+    EXPECT_TRUE(result["requires_execution_approval"].get<bool>());
+    EXPECT_EQ(result["missing_approvals"], json::array({"mutating"}));
+
+    ASSERT_EQ(run_bash("cd '" + ws + "' && git diff --cached --quiet -- blocked.txt"), 0)
+        << "blocked git_add must not stage anything";
+
+    std::filesystem::remove_all(ws);
+}
+
+TEST(SchemaAndArgsToleranceTest, GitAddRequiresExecutionApprovalEvenIfMutatingAllowed) {
+    const auto ws =
+        (std::filesystem::temp_directory_path() /
+         ("nano_git_add_exec_req_" + std::to_string(getpid())))
+            .string();
+    std::filesystem::remove_all(ws);
+    std::filesystem::create_directories(ws);
+
+    ASSERT_EQ(run_bash("cd '" + ws + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T"), 0);
+    {
+        std::ofstream out(std::filesystem::path(ws) / "blocked.txt");
+        out << "blocked\n";
+    }
+
+    AgentConfig config;
+    config.workspace_abs = ws;
+    config.allow_mutating_tools = true;
+    config.allow_execution_tools = false;
+
+    ToolCall tc;
+    tc.name = "git_add";
+    tc.arguments = {{"pathspecs", json::array({"blocked.txt"})}};
+
+    const json result = json::parse(execute_tool(tc, config));
+    EXPECT_FALSE(result["ok"].get<bool>()) << result.dump();
+    EXPECT_EQ(result["status"], "blocked");
+    EXPECT_EQ(result["category"], "mutating");
+    EXPECT_TRUE(result["requires_mutating_approval"].get<bool>());
+    EXPECT_TRUE(result["requires_execution_approval"].get<bool>());
+    EXPECT_EQ(result["missing_approvals"], json::array({"execution"}));
+
+    ASSERT_EQ(run_bash("cd '" + ws + "' && git diff --cached --quiet -- blocked.txt"), 0)
+        << "blocked git_add must not stage anything";
+
+    std::filesystem::remove_all(ws);
+}
+
+TEST(SchemaAndArgsToleranceTest, GitCommitBlockedWithoutMutatingApprovalHasNoSideEffects) {
+    const auto ws =
+        (std::filesystem::temp_directory_path() /
+         ("nano_git_commit_blocked_" + std::to_string(getpid())))
+            .string();
+    std::filesystem::remove_all(ws);
+    std::filesystem::create_directories(ws);
+
+    ASSERT_EQ(run_bash("cd '" + ws + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T &&"
+                       " printf 'base\\n' > tracked.txt &&"
+                       " git add tracked.txt >/dev/null 2>&1 &&"
+                       " git commit -m init >/dev/null 2>&1 &&"
+                       " printf 'next\\n' > tracked.txt &&"
+                       " git add tracked.txt >/dev/null 2>&1"), 0);
+
+    AgentConfig config;
+    config.workspace_abs = ws;
+    config.allow_execution_tools = true;
+
+    const std::string before_head_cmd =
+        "cd '" + ws + "' && git rev-parse HEAD > head_before.txt";
+    ASSERT_EQ(run_bash(before_head_cmd), 0);
+
+    ToolCall tc;
+    tc.name = "git_commit";
+    tc.arguments = {{"message", "blocked commit"}};
+
+    const json result = json::parse(execute_tool(tc, config));
+    EXPECT_FALSE(result["ok"].get<bool>()) << result.dump();
+    EXPECT_EQ(result["status"], "blocked");
+    EXPECT_EQ(result["category"], "mutating");
+    EXPECT_TRUE(result["requires_mutating_approval"].get<bool>());
+    EXPECT_TRUE(result["requires_execution_approval"].get<bool>());
+    EXPECT_EQ(result["missing_approvals"], json::array({"mutating"}));
+
+    ASSERT_EQ(run_bash("cd '" + ws + "' && git rev-parse HEAD > head_after.txt"), 0);
+    std::ifstream before(std::filesystem::path(ws) / "head_before.txt");
+    std::ifstream after(std::filesystem::path(ws) / "head_after.txt");
+    std::string before_sha;
+    std::string after_sha;
+    std::getline(before, before_sha);
+    std::getline(after, after_sha);
+    EXPECT_EQ(before_sha, after_sha) << "blocked git_commit must not create a commit";
+
+    ASSERT_EQ(run_bash("cd '" + ws + "' && ! git diff --cached --quiet -- tracked.txt"), 0)
+        << "blocked git_commit must leave staged changes untouched";
+
+    std::filesystem::remove_all(ws);
+}
+
+TEST(SchemaAndArgsToleranceTest, GitCommitRequiresMutatingApprovalEvenIfExecutionAllowed) {
+    const auto ws =
+        (std::filesystem::temp_directory_path() /
+         ("nano_git_commit_mutating_req_" + std::to_string(getpid())))
+            .string();
+    std::filesystem::remove_all(ws);
+    std::filesystem::create_directories(ws);
+
+    ASSERT_EQ(run_bash("cd '" + ws + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T &&"
+                       " printf 'hello\\n' > tracked.txt &&"
+                       " git add tracked.txt >/dev/null 2>&1"), 0);
+
+    AgentConfig config;
+    config.workspace_abs = ws;
+    config.allow_mutating_tools = false;
+    config.allow_execution_tools = true;
+
+    ToolCall tc;
+    tc.name = "git_commit";
+    tc.arguments = {{"message", "blocked commit"}};
+
+    const json result = json::parse(execute_tool(tc, config));
+    EXPECT_FALSE(result["ok"].get<bool>()) << result.dump();
+    EXPECT_EQ(result["status"], "blocked");
+    EXPECT_EQ(result["category"], "mutating");
+    EXPECT_TRUE(result["requires_mutating_approval"].get<bool>());
+    EXPECT_TRUE(result["requires_execution_approval"].get<bool>());
+    EXPECT_EQ(result["missing_approvals"], json::array({"mutating"}));
+
+    std::filesystem::remove_all(ws);
+}
+
+TEST(SchemaAndArgsToleranceTest, GitCommitRequiresExecutionApprovalEvenIfMutatingAllowed) {
+    const auto ws =
+        (std::filesystem::temp_directory_path() /
+         ("nano_git_commit_exec_req_" + std::to_string(getpid())))
+            .string();
+    std::filesystem::remove_all(ws);
+    std::filesystem::create_directories(ws);
+
+    ASSERT_EQ(run_bash("cd '" + ws + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T &&"
+                       " printf 'base\\n' > tracked.txt &&"
+                       " git add tracked.txt >/dev/null 2>&1 &&"
+                       " git commit -m init >/dev/null 2>&1 &&"
+                       " printf 'next\\n' > tracked.txt &&"
+                       " git add tracked.txt >/dev/null 2>&1"), 0);
+
+    AgentConfig config;
+    config.workspace_abs = ws;
+    config.allow_mutating_tools = true;
+    config.allow_execution_tools = false;
+
+    ToolCall tc;
+    tc.name = "git_commit";
+    tc.arguments = {{"message", "blocked commit"}};
+
+    const json result = json::parse(execute_tool(tc, config));
+    EXPECT_FALSE(result["ok"].get<bool>()) << result.dump();
+    EXPECT_EQ(result["status"], "blocked");
+    EXPECT_EQ(result["category"], "mutating");
+    EXPECT_TRUE(result["requires_mutating_approval"].get<bool>());
+    EXPECT_TRUE(result["requires_execution_approval"].get<bool>());
+    EXPECT_EQ(result["missing_approvals"], json::array({"execution"}));
+
+    ASSERT_EQ(run_bash("cd '" + ws + "' && ! git diff --cached --quiet -- tracked.txt"), 0)
+        << "blocked git_commit must leave staged changes untouched";
+
+    std::filesystem::remove_all(ws);
+}
+
 TEST(SchemaAndArgsToleranceTest, SchemaIncludesBuildAndTestSafeTools) {
     json schema = get_agent_tools_schema();
     json build_params;
@@ -388,6 +707,7 @@ TEST(SchemaAndArgsToleranceTest, SchemaIncludesBuildAndTestSafeTools) {
 TEST(SchemaAndArgsToleranceTest, BuildProjectSafeRejectsInvalidBuildMode) {
     AgentConfig config;
     config.workspace_abs = ".";
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
 
     ToolCall tc;
@@ -401,6 +721,7 @@ TEST(SchemaAndArgsToleranceTest, BuildProjectSafeRejectsInvalidBuildMode) {
 TEST(SchemaAndArgsToleranceTest, BuildProjectSafeRejectsInvalidCleanFirstType) {
     AgentConfig config;
     config.workspace_abs = ".";
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
 
     ToolCall tc;
@@ -414,6 +735,7 @@ TEST(SchemaAndArgsToleranceTest, BuildProjectSafeRejectsInvalidCleanFirstType) {
 TEST(SchemaAndArgsToleranceTest, BuildProjectSafeRejectsUnsupportedTarget) {
     AgentConfig config;
     config.workspace_abs = ".";
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
 
     ToolCall tc;
@@ -427,6 +749,7 @@ TEST(SchemaAndArgsToleranceTest, BuildProjectSafeRejectsUnsupportedTarget) {
 TEST(SchemaAndArgsToleranceTest, TestProjectSafeRejectsUnsupportedFilter) {
     AgentConfig config;
     config.workspace_abs = ".";
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
 
     ToolCall tc;
@@ -440,6 +763,7 @@ TEST(SchemaAndArgsToleranceTest, TestProjectSafeRejectsUnsupportedFilter) {
 TEST(SchemaAndArgsToleranceTest, TestProjectSafeRejectsEnsureDebugBuild) {
     AgentConfig config;
     config.workspace_abs = ".";
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
 
     ToolCall tc;
@@ -453,6 +777,7 @@ TEST(SchemaAndArgsToleranceTest, TestProjectSafeRejectsEnsureDebugBuild) {
 TEST(SchemaAndArgsToleranceTest, BuildProjectSafeRejectsTimeoutOverflow) {
     AgentConfig config;
     config.workspace_abs = ".";
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
 
     ToolCall tc;
@@ -466,6 +791,7 @@ TEST(SchemaAndArgsToleranceTest, BuildProjectSafeRejectsTimeoutOverflow) {
 TEST(SchemaAndArgsToleranceTest, BuildProjectSafeRejectsHugeOutputLimit) {
     AgentConfig config;
     config.workspace_abs = ".";
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
 
     ToolCall tc;
@@ -479,6 +805,7 @@ TEST(SchemaAndArgsToleranceTest, BuildProjectSafeRejectsHugeOutputLimit) {
 TEST(SchemaAndArgsToleranceTest, BuildProjectSafeRejectsZeroOutputLimit) {
     AgentConfig config;
     config.workspace_abs = ".";
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
 
     ToolCall tc;
@@ -511,6 +838,7 @@ TEST(SchemaAndArgsToleranceTest, BuildProjectSafeDispatchReturnsStructuredJson) 
 
     AgentConfig config;
     config.workspace_abs = ws;
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
 
     ToolCall tc;
@@ -895,6 +1223,30 @@ TEST(SchemaAndArgsToleranceTest, SchemaIncludesGitDiffAndGitShow) {
     EXPECT_EQ(git_show_params["required"], json::array({"rev"}));
 }
 
+TEST(SchemaAndArgsToleranceTest, SchemaIncludesGitAddAndGitCommit) {
+    json schema = get_agent_tools_schema();
+    json git_add_params;
+    json git_commit_params;
+
+    for (const auto& tool : schema) {
+        const std::string name = tool["function"]["name"];
+        if (name == "git_add") {
+            git_add_params = tool["function"]["parameters"];
+        }
+        if (name == "git_commit") {
+            git_commit_params = tool["function"]["parameters"];
+        }
+    }
+
+    ASSERT_TRUE(git_add_params.is_object());
+    ASSERT_TRUE(git_commit_params.is_object());
+    EXPECT_EQ(git_add_params["properties"]["pathspecs"]["type"], "array");
+    EXPECT_EQ(git_add_params["properties"]["pathspecs"]["items"]["type"], "string");
+    EXPECT_EQ(git_add_params["required"], json::array({"pathspecs"}));
+    EXPECT_EQ(git_commit_params["properties"]["message"]["type"], "string");
+    EXPECT_EQ(git_commit_params["required"], json::array({"message"}));
+}
+
 TEST(SchemaAndArgsToleranceTest, ExecuteToolDispatchesGitDiffAndGitShow) {
     const auto ws =
         (std::filesystem::temp_directory_path() /
@@ -931,6 +1283,83 @@ TEST(SchemaAndArgsToleranceTest, ExecuteToolDispatchesGitDiffAndGitShow) {
         << "git_show dispatch must return JSON with 'ok' field; got: " << show_res;
 
     std::filesystem::remove_all(ws);
+}
+
+TEST(SchemaAndArgsToleranceTest, ExecuteToolDispatchesGitAddAndGitCommit) {
+    const auto ws =
+        (std::filesystem::temp_directory_path() /
+         ("nano_schema_gitpackage_" + std::to_string(getpid())))
+            .string();
+    std::filesystem::remove_all(ws);
+    std::filesystem::create_directories(ws);
+
+    ASSERT_EQ(run_bash("cd '" + ws + "' && git init -b main >/dev/null 2>&1 &&"
+                       " git config user.email t@t.com && git config user.name T"), 0);
+    {
+        std::ofstream out(std::filesystem::path(ws) / "tracked.txt");
+        out << "hello\n";
+    }
+
+    AgentConfig config;
+    config.workspace_abs = ws;
+    config.allow_mutating_tools = true;
+    config.allow_execution_tools = true;
+
+    ToolCall add_call;
+    add_call.name = "git_add";
+    add_call.arguments = {{"pathspecs", json::array({"tracked.txt"})}};
+    const json add_json = json::parse(execute_tool(add_call, config));
+    EXPECT_TRUE(add_json.contains("ok")) << add_json.dump();
+
+    ToolCall commit_call;
+    commit_call.name = "git_commit";
+    commit_call.arguments = {{"message", "init"}};
+    const json commit_json = json::parse(execute_tool(commit_call, config));
+    EXPECT_TRUE(commit_json.contains("ok")) << commit_json.dump();
+
+    std::filesystem::remove_all(ws);
+}
+
+TEST(SchemaAndArgsToleranceTest, GitAddRejectsNonArrayPathspecs) {
+    AgentConfig config;
+    config.workspace_abs = ".";
+    config.allow_mutating_tools = true;
+    config.allow_execution_tools = true;
+
+    ToolCall tc;
+    tc.name = "git_add";
+    tc.arguments = {{"pathspecs", "not-an-array"}};
+
+    const std::string res = execute_tool(tc, config);
+    EXPECT_NE(res.find("Argument 'pathspecs' must be an array of strings."), std::string::npos);
+}
+
+TEST(SchemaAndArgsToleranceTest, GitAddRejectsEmptyPathspecsAtRuntime) {
+    AgentConfig config;
+    config.workspace_abs = ".";
+    config.allow_mutating_tools = true;
+    config.allow_execution_tools = true;
+
+    ToolCall tc;
+    tc.name = "git_add";
+    tc.arguments = {{"pathspecs", json::array()}};
+
+    const std::string res = execute_tool(tc, config);
+    EXPECT_NE(res.find("must contain at least one pathspec"), std::string::npos);
+}
+
+TEST(SchemaAndArgsToleranceTest, GitCommitRejectsEmptyMessageAtRuntime) {
+    AgentConfig config;
+    config.workspace_abs = ".";
+    config.allow_mutating_tools = true;
+    config.allow_execution_tools = true;
+
+    ToolCall tc;
+    tc.name = "git_commit";
+    tc.arguments = {{"message", ""}};
+
+    const std::string res = execute_tool(tc, config);
+    EXPECT_NE(res.find("Argument 'message' for git_commit must not be empty."), std::string::npos);
 }
 
 TEST(SchemaAndArgsToleranceTest, GitDiffClampsHugeContextLines) {

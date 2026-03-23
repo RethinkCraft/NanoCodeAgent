@@ -74,6 +74,7 @@ protected:
     AgentConfig approved_config() const {
         AgentConfig config;
         config.workspace_abs = workspace_;
+        config.allow_mutating_tools = true;
         config.allow_execution_tools = true;
         return config;
     }

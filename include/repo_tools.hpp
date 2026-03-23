@@ -39,5 +39,13 @@ nlohmann::json git_show(const std::string& workspace_abs,
                         size_t context_lines,
                         size_t output_limit = 0);
 
+nlohmann::json git_add(const std::string& workspace_abs,
+                       const std::vector<std::string>& pathspecs,
+                       size_t output_limit = 0);
+
+nlohmann::json git_commit(const std::string& workspace_abs,
+                          const std::string& message,
+                          size_t output_limit = 0);
+
 void set_rg_binary_for_testing(const std::string& path);
 void clear_rg_binary_for_testing();

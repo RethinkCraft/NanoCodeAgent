@@ -93,6 +93,7 @@ protected:
 TEST_F(AgentLoopLimitsTest, MaxTurnsHalt) {
     AgentConfig config;
     config.workspace_abs = test_workspace;
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
     config.max_turns = 3;
     config.max_tool_calls_per_turn = 5;
@@ -127,6 +128,7 @@ TEST_F(AgentLoopLimitsTest, MaxTurnsHalt) {
 TEST_F(AgentLoopLimitsTest, MaxToolCallsPerTurn) {
     AgentConfig config;
     config.workspace_abs = test_workspace;
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
     config.max_turns = 10;
     config.max_tool_calls_per_turn = 2; // Limit 2
@@ -155,6 +157,7 @@ TEST_F(AgentLoopLimitsTest, MaxToolCallsPerTurn) {
 TEST_F(AgentLoopLimitsTest, MaxTotalToolCalls) {
     AgentConfig config;
     config.workspace_abs = test_workspace;
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
     config.max_turns = 10;
     config.max_tool_calls_per_turn = 5;
@@ -354,6 +357,7 @@ TEST_F(AgentLoopLimitsTest, BuildFailureContinuesWithInspectionGuidance) {
 
     AgentConfig config;
     config.workspace_abs = test_workspace;
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
     config.max_turns = 3;
 
@@ -394,6 +398,7 @@ TEST_F(AgentLoopLimitsTest, TestFailureContinuesWithFailedTestsGuidance) {
 
     AgentConfig config;
     config.workspace_abs = test_workspace;
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
     config.max_turns = 3;
 
@@ -437,6 +442,7 @@ TEST_F(AgentLoopLimitsTest, TestFailureGuidanceEllipsizesAfterVisibleFailedTests
 
     AgentConfig config;
     config.workspace_abs = test_workspace;
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
     config.max_turns = 3;
 
@@ -475,6 +481,7 @@ TEST_F(AgentLoopLimitsTest, TestFailureWithoutParsedFailedTestsOmitsMalformedFra
 
     AgentConfig config;
     config.workspace_abs = test_workspace;
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
     config.max_turns = 3;
 
@@ -514,6 +521,7 @@ TEST_F(AgentLoopLimitsTest, BuildTimeoutContinuesWithRetryGuidance) {
 
     AgentConfig config;
     config.workspace_abs = test_workspace;
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
     config.max_turns = 3;
 
@@ -678,6 +686,7 @@ TEST_F(AgentLoopLimitsTest, RepeatedBlockedFailureStopsAfterRetryBudget) {
 TEST_F(AgentLoopLimitsTest, UnsupportedStructuredFailureRemainsFatal) {
     AgentConfig config;
     config.workspace_abs = test_workspace;
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
     config.max_turns = 3;
 
@@ -860,6 +869,7 @@ TEST_F(AgentLoopLimitsTest, GuidanceMessageStaysSmallAndActionable) {
 
     AgentConfig config;
     config.workspace_abs = test_workspace;
+    config.allow_mutating_tools = true;
     config.allow_execution_tools = true;
     config.max_turns = 3;
 
