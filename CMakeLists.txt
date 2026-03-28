@@ -60,6 +60,8 @@ set(SOURCES
     src/agent_tools.cpp
     src/apply_patch.cpp
     src/agent_loop.cpp
+    src/docgen_llm.cpp
+    src/docgen_pipeline.cpp
 )
 
 # Main executable
