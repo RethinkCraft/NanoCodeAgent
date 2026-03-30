@@ -17,6 +17,8 @@ set(TEST_SOURCES
     ../src/agent_tools.cpp
     ../src/apply_patch.cpp
     ../src/agent_loop.cpp
+    ../src/docgen_llm.cpp
+    ../src/docgen_pipeline.cpp
 )
 
 # CLI Test
@@ -130,5 +132,9 @@ gtest_discover_tests(test_apply_patch)
 add_executable(test_net_smoke test_net_smoke.cpp ${TEST_SOURCES})
 target_link_libraries(test_net_smoke PRIVATE GTest::gtest_main spdlog::spdlog CURL::libcurl nlohmann_json::nlohmann_json)
 target_include_directories(test_net_smoke PRIVATE ../include)
-# Setup net test properties
 gtest_discover_tests(test_net_smoke PROPERTIES LABELS "net")
+
+add_executable(test_docgen_types test_docgen_types.cpp ${TEST_SOURCES})
+target_link_libraries(test_docgen_types PRIVATE GTest::gtest_main spdlog::spdlog CURL::libcurl nlohmann_json::nlohmann_json)
+target_include_directories(test_docgen_types PRIVATE ../include)
+gtest_discover_tests(test_docgen_types)

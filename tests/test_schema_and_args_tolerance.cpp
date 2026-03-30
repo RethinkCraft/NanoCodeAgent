@@ -34,7 +34,7 @@ int run_bash(const std::string& command) {
 
 TEST(SchemaAndArgsToleranceTest, GetSchemaMatchesCurrentTools) {
     json schema = get_agent_tools_schema();
-    EXPECT_EQ(schema.size(), 13u);
+    EXPECT_EQ(schema.size(), 14u);
 
     bool has_read        = false;
     bool has_write       = false;
@@ -49,6 +49,7 @@ TEST(SchemaAndArgsToleranceTest, GetSchemaMatchesCurrentTools) {
     bool has_git_show    = false;
     bool has_git_add     = false;
     bool has_git_commit  = false;
+    bool has_delegate    = false;
     for (const auto& tool : schema) {
         std::string name = tool["function"]["name"];
         if (name == "read_file_safe")   has_read        = true;
@@ -64,6 +65,7 @@ TEST(SchemaAndArgsToleranceTest, GetSchemaMatchesCurrentTools) {
         if (name == "git_show")         has_git_show    = true;
         if (name == "git_add")          has_git_add     = true;
         if (name == "git_commit")       has_git_commit  = true;
+        if (name == "delegate_subagent") has_delegate   = true;
     }
     EXPECT_TRUE(has_read);
     EXPECT_TRUE(has_write);
@@ -78,6 +80,32 @@ TEST(SchemaAndArgsToleranceTest, GetSchemaMatchesCurrentTools) {
     EXPECT_TRUE(has_git_show);
     EXPECT_TRUE(has_git_add);
     EXPECT_TRUE(has_git_commit);
+    EXPECT_TRUE(has_delegate);
+}
+
+TEST(SchemaAndArgsToleranceTest, DelegateSubagentSchemaExposesExpectedFields) {
+    json schema = get_agent_tools_schema();
+
+    for (const auto& tool : schema) {
+        if (tool["function"]["name"] != "delegate_subagent") {
+            continue;
+        }
+
+        const json& parameters = tool["function"]["parameters"];
+        ASSERT_TRUE(parameters.is_object());
+        ASSERT_TRUE(parameters.contains("properties"));
+        const json& properties = parameters["properties"];
+        EXPECT_TRUE(properties.contains("role"));
+        EXPECT_TRUE(properties.contains("task"));
+        EXPECT_TRUE(properties.contains("context_files"));
+        EXPECT_TRUE(properties.contains("context_notes"));
+        EXPECT_TRUE(properties.contains("expected_output"));
+        EXPECT_TRUE(properties.contains("max_turns"));
+        EXPECT_EQ(parameters["required"], json::array({"role", "task"}));
+        return;
+    }
+
+    ADD_FAILURE() << "delegate_subagent not found in tool schema";
 }
 
 TEST(SchemaAndArgsToleranceTest, BashTimeoutRejectsOutOfRangeInteger) {

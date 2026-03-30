@@ -12,7 +12,7 @@
 std::string execute_tool(const ToolCall& cmd, const AgentConfig& config);
 
 // Returns the JSON schema representing the tools the agent is capable of running
-nlohmann::json get_agent_tools_schema();
+nlohmann::json get_agent_tools_schema(bool include_delegate_subagent = true);
 
 // Returns the default built-in tool registry used by the agent runtime.
 const ToolRegistry& get_default_tool_registry();

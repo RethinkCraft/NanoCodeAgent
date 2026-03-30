@@ -35,10 +35,11 @@ For coding work, a task enters through CLI and config setup, flows through the a
 - Agent loop and tool-calling basics
 - HTTP / LLM integration and SSE streaming
 - Safety-bounded `read`, `write`, and `bash` tools
+- Repository-aware search, diff, staging, and commit packaging tools with policy-gated approvals
 - Test infrastructure and deterministic mdBook validation
 - Change-aware documentation automation for README and book chapters, including scope decisions, reference context, blocking verify, and review/rework evidence
 
-`Phase 1` completes the in-repository coding workflow loop: structured git and patch tools, repository search, policy-gated mutations and approvals, bounded build/test, and `git_add` / `git_commit` for packaging changes.
+`Phase 1` completes the in-repository coding workflow loop: structured git and patch tools, repository search, policy-gated mutations and approvals, bounded build/test, `git_add` / `git_commit` packaging guarded by the same approval model, and recovery guidance for blocked or inspectable tool failures.
 
 ## Documentation Automation
 
