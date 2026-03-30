@@ -229,6 +229,46 @@ void register_or_throw(ToolRegistry* registry, ToolDescriptor descriptor) {
     }
 }
 
+nlohmann::json make_delegate_subagent_schema_entry() {
+    return {
+        {"type", "function"},
+        {"function", {
+            {"name", "delegate_subagent"},
+            {"description",
+             "Delegates a bounded, temporary sub-task to a disposable child agent. "
+             "Use only for narrow side tasks that benefit from isolated context. "
+             "The child cannot delegate again and returns a compact structured summary."},
+            {"parameters", make_parameters_schema({
+                {"role", {
+                    {"type", "string"},
+                    {"description", "Short role label describing the child specialization for this task."}
+                }},
+                {"task", {
+                    {"type", "string"},
+                    {"description", "The exact delegated task for the child agent."}
+                }},
+                {"context_files", {
+                    {"type", "array"},
+                    {"items", {{"type", "string"}}},
+                    {"description", "Optional repository-relative files the child should inspect first."}
+                }},
+                {"context_notes", {
+                    {"type", "string"},
+                    {"description", "Optional brief context or constraints from the parent."}
+                }},
+                {"expected_output", {
+                    {"type", "string"},
+                    {"description", "Describe the concise result summary the child should return."}
+                }},
+                {"max_turns", {
+                    {"type", "integer"},
+                    {"description", "Optional maximum child turns. The runtime may clamp this below the parent limits."}
+                }}
+            }, {"role", "task"})}
+        }}
+    };
+}
+
 ToolRegistry build_default_tool_registry() {
     ToolRegistry registry;
 
@@ -860,6 +900,10 @@ std::string execute_tool(const ToolCall& cmd, const AgentConfig& config) {
     return get_default_tool_registry().execute(cmd, config);
 }
 
-nlohmann::json get_agent_tools_schema() {
-    return get_default_tool_registry().to_openai_schema();
+nlohmann::json get_agent_tools_schema(bool include_delegate_subagent) {
+    nlohmann::json schema = get_default_tool_registry().to_openai_schema();
+    if (include_delegate_subagent) {
+        schema.push_back(make_delegate_subagent_schema_entry());
+    }
+    return schema;
 }

@@ -31,6 +31,18 @@ int run_bash(const std::string& command) {
     return std::system(wrapped.c_str());
 }
 
+std::string tool_message_content_for_id(const nlohmann::json& messages, const std::string& tool_call_id) {
+    for (const auto& message : messages) {
+        if (message.value("role", "") != "tool") {
+            continue;
+        }
+        if (message.value("tool_call_id", "") == tool_call_id) {
+            return message.value("content", "");
+        }
+    }
+    return "";
+}
+
 } // namespace
 
 class AgentMockE2ETest : public ::testing::Test {
@@ -225,4 +237,82 @@ TEST_F(AgentMockE2ETest, MockReadOnlyRepoObservationChainDoesNotWriteWorkspace) 
 
     EXPECT_EQ(turn, 4);
     EXPECT_EQ(snapshot_workspace_files(), before_snapshot);
+}
+
+TEST_F(AgentMockE2ETest, ParentDelegatesChildAndReceivesStructuredSummary) {
+    create_file("delegate.txt", "delegate me");
+
+    AgentConfig config;
+    config.workspace_abs = test_workspace;
+    config.max_turns = 4;
+    config.max_tool_calls_per_turn = 4;
+    config.max_total_tool_calls = 8;
+    config.max_tool_output_bytes = 4096;
+    config.max_context_bytes = 12000;
+
+    int parent_turn = 0;
+    int child_turn = 0;
+    nlohmann::json second_turn_messages = nlohmann::json::array();
+
+    LLMStreamFunc mock_llm = [&](const AgentConfig&, const nlohmann::json& msgs, const nlohmann::json&) -> nlohmann::json {
+        const std::string first_system = msgs[0].value("content", "");
+        if (first_system.find("temporary delegated subagent") != std::string::npos) {
+            child_turn++;
+            if (child_turn == 1) {
+                return nlohmann::json{
+                    {"role", "assistant"},
+                    {"tool_calls", {{
+                        {"id", "child_read"},
+                        {"function", {
+                            {"name", "read_file_safe"},
+                            {"arguments", "{\"path\":\"delegate.txt\"}"}
+                        }}
+                    }}}
+                };
+            }
+
+            return nlohmann::json{
+                {"role", "assistant"},
+                {"content",
+                 "{\"ok\":true,\"result_summary\":\"Read delegate.txt\",\"files_touched\":[\"delegate.txt\"],"
+                 "\"key_facts\":[\"delegate.txt contains delegate me\"],\"open_questions\":[],"
+                 "\"commands_ran\":[],\"verification_passed\":true,\"error\":\"\"}"}
+            };
+        }
+
+        parent_turn++;
+        if (parent_turn == 1) {
+            return nlohmann::json{
+                {"role", "assistant"},
+                {"tool_calls", {{
+                    {"id", "delegate_call"},
+                    {"function", {
+                        {"name", "delegate_subagent"},
+                        {"arguments",
+                         "{\"role\":\"reviewer\",\"task\":\"Inspect delegate.txt\",\"context_files\":[\"delegate.txt\"],"
+                         "\"expected_output\":\"Return the important fact\",\"max_turns\":2}"}
+                    }}
+                }}}
+            };
+        }
+
+        second_turn_messages = msgs;
+        return nlohmann::json{
+            {"role", "assistant"},
+            {"content", "Parent integrated the child summary"}
+        };
+    };
+
+    agent_run(config, "parent system", "delegate a side task", get_agent_tools_schema(), mock_llm);
+
+    ASSERT_EQ(parent_turn, 2);
+    ASSERT_EQ(child_turn, 2);
+
+    const auto result = nlohmann::json::parse(tool_message_content_for_id(second_turn_messages, "delegate_call"));
+    EXPECT_TRUE(result["ok"].get<bool>()) << result.dump();
+    EXPECT_EQ(result["role"], "reviewer");
+    EXPECT_EQ(result["task"], "Inspect delegate.txt");
+    EXPECT_EQ(result["result_summary"], "Read delegate.txt");
+    EXPECT_EQ(result["files_touched"], nlohmann::json::array({"delegate.txt"}));
+    EXPECT_EQ(result["key_facts"], nlohmann::json::array({"delegate.txt contains delegate me"}));
 }

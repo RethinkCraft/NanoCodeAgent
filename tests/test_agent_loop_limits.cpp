@@ -3,6 +3,7 @@
 #include "agent_utils.hpp"
 #include "config.hpp"
 #include "logger.hpp"
+#include "agent_tools.hpp"
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -38,6 +39,22 @@ std::string first_message_content_with_role(const nlohmann::json& messages, cons
         if (message.value("role", "") == role) {
             return message.value("content", "");
         }
+    }
+    return "";
+}
+
+std::string nth_message_content_with_role(const nlohmann::json& messages,
+                                          const std::string& role,
+                                          int ordinal) {
+    int seen = 0;
+    for (const auto& message : messages) {
+        if (message.value("role", "") != role) {
+            continue;
+        }
+        if (seen == ordinal) {
+            return message.value("content", "");
+        }
+        ++seen;
     }
     return "";
 }
@@ -1062,14 +1079,24 @@ TEST_F(AgentLoopLimitsTest, CombinedTruncationAndContextLimit) {
     config.workspace_abs = test_workspace;
     config.max_turns = 2; // Need a second turn to test context clipping
     config.max_tool_output_bytes = 50; // Severely truncate individual tools
-    config.max_context_bytes = 900;    // Tightly clamp total context
+    config.max_context_bytes = 500;    // Tightly clamp total context
     
-    int call_count = 0;
+    int loop_call_count = 0;
+    int compaction_call_count = 0;
     size_t msgs_size_turn_2 = 0;
     
     LLMStreamFunc mock_llm = [&](const AgentConfig& cfg, const nlohmann::json& msgs, const nlohmann::json&) -> nlohmann::json {
-        call_count++;
-        if (call_count == 1) {
+        const std::string first_system = first_message_content_with_role(msgs, "system");
+        if (first_system.find("context compactor") != std::string::npos) {
+            compaction_call_count++;
+            return nlohmann::json{
+                {"role", "assistant"},
+                {"content", "Earlier reads covered big_a.txt, big_b.txt, and big_c.txt; outputs were truncated."}
+            };
+        }
+
+        loop_call_count++;
+        if (loop_call_count == 1) {
             // First turn: generate lots of tools with heavy output
             return nlohmann::json{
                 {"role", "assistant"},
@@ -1089,9 +1116,275 @@ TEST_F(AgentLoopLimitsTest, CombinedTruncationAndContextLimit) {
     agent_run(config, "Sys", "Req", nlohmann::json::array(), mock_llm);
     
     // Expect agent went to turn 2
-    EXPECT_EQ(call_count, 2);
+    EXPECT_EQ(loop_call_count, 2);
+    EXPECT_EQ(compaction_call_count, 1);
     
     // Validate output shrinkage actually cascaded nicely below global max limitation
     EXPECT_LE(msgs_size_turn_2, config.max_context_bytes);
     EXPECT_GT(msgs_size_turn_2, 0);
+}
+
+TEST_F(AgentLoopLimitsTest, DelegateSubagentChildFiltersToolsAndReturnsStructuredResult) {
+    write_file("delegate.txt", "delegated content");
+
+    AgentConfig config;
+    config.workspace_abs = test_workspace;
+    config.max_turns = 4;
+    config.max_tool_calls_per_turn = 4;
+    config.max_total_tool_calls = 8;
+
+    int parent_turn = 0;
+    int child_turn = 0;
+    bool child_saw_delegate = false;
+    nlohmann::json second_turn_messages = nlohmann::json::array();
+
+    LLMStreamFunc mock_llm = [&](const AgentConfig&, const nlohmann::json& messages, const nlohmann::json& tools) -> nlohmann::json {
+        const std::string first_system = first_message_content_with_role(messages, "system");
+        if (first_system.find("temporary delegated subagent") != std::string::npos) {
+            child_turn++;
+            for (const auto& tool : tools) {
+                if (tool["function"]["name"] == "delegate_subagent") {
+                    child_saw_delegate = true;
+                }
+            }
+
+            if (child_turn == 1) {
+                return nlohmann::json{
+                    {"role", "assistant"},
+                    {"tool_calls", {{
+                        {"id", "child_read"},
+                        {"function", {
+                            {"name", "read_file_safe"},
+                            {"arguments", "{\"path\":\"delegate.txt\"}"}
+                        }}
+                    }}}
+                };
+            }
+
+            return nlohmann::json{
+                {"role", "assistant"},
+                {"content",
+                 "{\"ok\":true,\"result_summary\":\"Read delegate.txt for the parent.\","
+                 "\"files_touched\":[\"delegate.txt\"],"
+                 "\"key_facts\":[\"delegate.txt contains delegated content\"],"
+                 "\"open_questions\":[],"
+                 "\"commands_ran\":[],"
+                 "\"verification_passed\":true,"
+                 "\"error\":\"\"}"}
+            };
+        }
+
+        parent_turn++;
+        if (parent_turn == 1) {
+            return nlohmann::json{
+                {"role", "assistant"},
+                {"tool_calls", {{
+                    {"id", "delegate_call"},
+                    {"function", {
+                        {"name", "delegate_subagent"},
+                        {"arguments",
+                         "{\"role\":\"researcher\",\"task\":\"Inspect delegate.txt\","
+                         "\"context_files\":[\"delegate.txt\"],\"expected_output\":\"Return the file finding\","
+                         "\"max_turns\":2}"}
+                    }}
+                }}}
+            };
+        }
+
+        second_turn_messages = messages;
+        return nlohmann::json{{"role", "assistant"}, {"content", "done"}};
+    };
+
+    agent_run(config, "parent system", "delegate the side task", get_agent_tools_schema(), mock_llm);
+
+    ASSERT_EQ(parent_turn, 2);
+    ASSERT_EQ(child_turn, 2);
+    EXPECT_FALSE(child_saw_delegate);
+
+    const auto result = nlohmann::json::parse(tool_message_content_for_id(second_turn_messages, "delegate_call"));
+    EXPECT_TRUE(result["ok"].get<bool>()) << result.dump();
+    EXPECT_EQ(result["role"], "researcher");
+    EXPECT_EQ(result["task"], "Inspect delegate.txt");
+    EXPECT_EQ(result["result_summary"], "Read delegate.txt for the parent.");
+    EXPECT_EQ(result["files_touched"], nlohmann::json::array({"delegate.txt"}));
+    EXPECT_EQ(result["key_facts"], nlohmann::json::array({"delegate.txt contains delegated content"}));
+    EXPECT_EQ(result["commands_ran"], nlohmann::json::array());
+    EXPECT_TRUE(result["verification_passed"].get<bool>());
+}
+
+TEST_F(AgentLoopLimitsTest, ChildCannotRecursivelyDelegate) {
+    AgentConfig config;
+    config.workspace_abs = test_workspace;
+    config.max_turns = 4;
+    config.max_tool_calls_per_turn = 4;
+    config.max_total_tool_calls = 8;
+
+    int parent_turn = 0;
+    int child_turn = 0;
+    nlohmann::json second_turn_messages = nlohmann::json::array();
+
+    LLMStreamFunc mock_llm = [&](const AgentConfig&, const nlohmann::json& messages, const nlohmann::json&) -> nlohmann::json {
+        const std::string first_system = first_message_content_with_role(messages, "system");
+        if (first_system.find("temporary delegated subagent") != std::string::npos) {
+            child_turn++;
+            return nlohmann::json{
+                {"role", "assistant"},
+                {"tool_calls", {{
+                    {"id", "child_delegate_again"},
+                    {"function", {
+                        {"name", "delegate_subagent"},
+                        {"arguments", "{\"role\":\"nested\",\"task\":\"Should fail\"}"}
+                    }}
+                }}}
+            };
+        }
+
+        parent_turn++;
+        if (parent_turn == 1) {
+            return nlohmann::json{
+                {"role", "assistant"},
+                {"tool_calls", {{
+                    {"id", "delegate_call"},
+                    {"function", {
+                        {"name", "delegate_subagent"},
+                        {"arguments", "{\"role\":\"researcher\",\"task\":\"Attempt recursion\"}"}
+                    }}
+                }}}
+            };
+        }
+
+        second_turn_messages = messages;
+        return nlohmann::json{{"role", "assistant"}, {"content", "done"}};
+    };
+
+    agent_run(config, "parent system", "delegate the side task", get_agent_tools_schema(), mock_llm);
+
+    ASSERT_EQ(parent_turn, 2);
+    ASSERT_EQ(child_turn, 1);
+
+    const auto result = nlohmann::json::parse(tool_message_content_for_id(second_turn_messages, "delegate_call"));
+    EXPECT_FALSE(result["ok"].get<bool>());
+    EXPECT_NE(result["error"].get<std::string>().find("ended without a final summary"), std::string::npos);
+}
+
+TEST_F(AgentLoopLimitsTest, CompactionPreservesSystemPromptAndRecentMessages) {
+    write_file("recent1.txt", "one" + std::string(100, 'x'));
+    write_file("recent2.txt", "two" + std::string(100, 'y'));
+    write_file("recent3.txt", "three" + std::string(100, 'z'));
+    write_file("recent4.txt", "four" + std::string(100, 'w'));
+    write_file("recent5.txt", "five" + std::string(100, 'v'));
+
+    AgentConfig config;
+    config.workspace_abs = test_workspace;
+    config.max_turns = 2;
+    config.max_tool_calls_per_turn = 8;
+    config.max_total_tool_calls = 8;
+    config.max_context_bytes = 1000;
+
+    int loop_turn = 0;
+    int compaction_turn = 0;
+    nlohmann::json second_turn_messages = nlohmann::json::array();
+
+    LLMStreamFunc mock_llm = [&](const AgentConfig&, const nlohmann::json& messages, const nlohmann::json&) -> nlohmann::json {
+        const std::string first_system = first_message_content_with_role(messages, "system");
+        if (first_system.find("context compactor") != std::string::npos) {
+            compaction_turn++;
+            return nlohmann::json{
+                {"role", "assistant"},
+                {"content", "Summary preserved src/main.cpp, bash -lc ./build.sh test, and compile failed."}
+            };
+        }
+
+        loop_turn++;
+        if (loop_turn == 1) {
+            return nlohmann::json{
+                {"role", "assistant"},
+                {"tool_calls", {
+                    {{"id", "recent1"}, {"function", {{"name", "read_file_safe"}, {"arguments", "{\"path\":\"recent1.txt\"}"}}}},
+                    {{"id", "recent2"}, {"function", {{"name", "read_file_safe"}, {"arguments", "{\"path\":\"recent2.txt\"}"}}}},
+                    {{"id", "recent3"}, {"function", {{"name", "read_file_safe"}, {"arguments", "{\"path\":\"recent3.txt\"}"}}}},
+                    {{"id", "recent4"}, {"function", {{"name", "read_file_safe"}, {"arguments", "{\"path\":\"recent4.txt\"}"}}}},
+                    {{"id", "recent5"}, {"function", {{"name", "read_file_safe"}, {"arguments", "{\"path\":\"recent5.txt\"}"}}}}
+                }}
+            };
+        }
+
+        second_turn_messages = messages;
+        return nlohmann::json{{"role", "assistant"}, {"content", "done"}};
+    };
+
+    agent_run(config,
+              "PRIMARY SYSTEM PROMPT",
+              "Earlier decision: inspect src/main.cpp after bash -lc ./build.sh test failed with compile failed.",
+              get_agent_tools_schema(false),
+              mock_llm);
+
+    EXPECT_EQ(loop_turn, 2);
+    EXPECT_EQ(compaction_turn, 1);
+    EXPECT_EQ(nth_message_content_with_role(second_turn_messages, "system", 0), "PRIMARY SYSTEM PROMPT");
+    EXPECT_NE(nth_message_content_with_role(second_turn_messages, "system", 1).find("Compacted earlier context summary"), std::string::npos);
+    EXPECT_NE(tool_message_content_for_id(second_turn_messages, "recent5").find("five"), std::string::npos);
+}
+
+TEST_F(AgentLoopLimitsTest, CompactionSummaryKeepsImportantFacts) {
+    write_file("facts1.txt", "fact one" + std::string(100, 'a'));
+    write_file("facts2.txt", "fact two" + std::string(100, 'b'));
+    write_file("facts3.txt", "fact three" + std::string(100, 'c'));
+    write_file("facts4.txt", "fact four" + std::string(100, 'd'));
+    write_file("facts5.txt", "fact five" + std::string(100, 'e'));
+
+    AgentConfig config;
+    config.workspace_abs = test_workspace;
+    config.max_turns = 2;
+    config.max_tool_calls_per_turn = 8;
+    config.max_total_tool_calls = 8;
+    config.max_context_bytes = 1000;
+
+    int loop_turn = 0;
+    std::string compaction_request;
+    nlohmann::json second_turn_messages = nlohmann::json::array();
+
+    LLMStreamFunc mock_llm = [&](const AgentConfig&, const nlohmann::json& messages, const nlohmann::json&) -> nlohmann::json {
+        const std::string first_system = first_message_content_with_role(messages, "system");
+        if (first_system.find("context compactor") != std::string::npos) {
+            compaction_request = messages[1].value("content", "");
+            return nlohmann::json{
+                {"role", "assistant"},
+                {"content", "Use src/main.cpp, rerun bash -lc ./build.sh test, and note compile failed."}
+            };
+        }
+
+        loop_turn++;
+        if (loop_turn == 1) {
+            return nlohmann::json{
+                {"role", "assistant"},
+                {"tool_calls", {
+                    {{"id", "facts1"}, {"function", {{"name", "read_file_safe"}, {"arguments", "{\"path\":\"facts1.txt\"}"}}}},
+                    {{"id", "facts2"}, {"function", {{"name", "read_file_safe"}, {"arguments", "{\"path\":\"facts2.txt\"}"}}}},
+                    {{"id", "facts3"}, {"function", {{"name", "read_file_safe"}, {"arguments", "{\"path\":\"facts3.txt\"}"}}}},
+                    {{"id", "facts4"}, {"function", {{"name", "read_file_safe"}, {"arguments", "{\"path\":\"facts4.txt\"}"}}}},
+                    {{"id", "facts5"}, {"function", {{"name", "read_file_safe"}, {"arguments", "{\"path\":\"facts5.txt\"}"}}}}
+                }}
+            };
+        }
+
+        second_turn_messages = messages;
+        return nlohmann::json{{"role", "assistant"}, {"content", "done"}};
+    };
+
+    agent_run(config,
+              "PRIMARY SYSTEM PROMPT",
+              "Remember src/main.cpp; command bash -lc ./build.sh test; latest error compile failed.",
+              get_agent_tools_schema(false),
+              mock_llm);
+
+    ASSERT_EQ(loop_turn, 2);
+    EXPECT_NE(compaction_request.find("src/main.cpp"), std::string::npos);
+    EXPECT_NE(compaction_request.find("bash -lc ./build.sh test"), std::string::npos);
+    EXPECT_NE(compaction_request.find("compile failed"), std::string::npos);
+
+    const std::string summary = nth_message_content_with_role(second_turn_messages, "system", 1);
+    EXPECT_NE(summary.find("src/main.cpp"), std::string::npos);
+    EXPECT_NE(summary.find("bash -lc ./build.sh test"), std::string::npos);
+    EXPECT_NE(summary.find("compile failed"), std::string::npos);
 }
